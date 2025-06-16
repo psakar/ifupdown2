@@ -1,3 +1,12 @@
+ifupdown2 (3.3.0-1+pmx1) trixie; urgency=medium
+
+  * update to 3.3.0 upstream release with following commits on top:
+    + fix error in ifquery -c -o json <tunnel interface>
+    + add WireGuard as known link type.
+    + python 3.12 compability.
+
+ -- Proxmox Support Team <support@proxmox.com>  Mon, 16 Jun 2025 15:49:42 +0200
+
 ifupdown2 (3.2.0-1+pmx11) bookworm; urgency=medium
 
   * slaac: avoid setting sysctl's for bridge twice
