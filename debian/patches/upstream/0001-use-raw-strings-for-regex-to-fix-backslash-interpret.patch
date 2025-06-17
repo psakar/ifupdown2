@@ -1,0 +1,74 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Thomas Lamprecht <t.lamprecht@proxmox.com>
+Date: Tue, 17 Jun 2025 10:30:44 +0200
+Subject: [PATCH] use raw strings for regex to fix backslash interpretation
+
+Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
+---
+ ifupdown2/addons/bridge.py         | 2 +-
+ ifupdown2/ifupdown/ifupdownmain.py | 2 +-
+ ifupdown2/ifupdown/utils.py        | 4 ++--
+ ifupdown2/lib/iproute2.py          | 2 +-
+ 4 files changed, 5 insertions(+), 5 deletions(-)
+
+diff --git a/ifupdown2/addons/bridge.py b/ifupdown2/addons/bridge.py
+index 4d6c091..5dd6b4c 100644
+--- a/ifupdown2/addons/bridge.py
++++ b/ifupdown2/addons/bridge.py
+@@ -3991,7 +3991,7 @@ class bridge(Bridge, moduleBase):
+         cached_ifla_brport_group_maskhi = self.cache.get_link_info_slave_data_attribute(brport_name, Link.IFLA_BRPORT_GROUP_FWD_MASKHI)
+         cached_ifla_brport_group_mask = self.cache.get_link_info_slave_data_attribute(brport_name, Link.IFLA_BRPORT_GROUP_FWD_MASK)
+ 
+-        for protocol in re.split(',|\s*', user_config_l2protocol_tunnel):
++        for protocol in re.split(r',|\s*', user_config_l2protocol_tunnel):
+             callback = self.query_check_l2protocol_tunnel_callback.get(protocol)
+ 
+             if callable(callback):
+diff --git a/ifupdown2/ifupdown/ifupdownmain.py b/ifupdown2/ifupdown/ifupdownmain.py
+index 51f5460..73240bc 100644
+--- a/ifupdown2/ifupdown/ifupdownmain.py
++++ b/ifupdown2/ifupdown/ifupdownmain.py
+@@ -1575,7 +1575,7 @@ class ifupdownMain:
+ 
+     def _render_ifacename(self, ifacename):
+         new_ifacenames = []
+-        vlan_match = re.match("^([\d]+)-([\d]+)", ifacename)
++        vlan_match = re.match(r"^([\d]+)-([\d]+)", ifacename)
+         if vlan_match:
+             vlan_groups = vlan_match.groups()
+             if vlan_groups[0] and vlan_groups[1]:
+diff --git a/ifupdown2/ifupdown/utils.py b/ifupdown2/ifupdown/utils.py
+index 0d0732b..739b79a 100644
+--- a/ifupdown2/ifupdown/utils.py
++++ b/ifupdown2/ifupdown/utils.py
+@@ -236,7 +236,7 @@ class utils():
+         # eg: swp1.[2-100]
+         # return (prefix, range-start, range-end)
+         # eg return ("swp1.", 1, 20, ".100")
+-        range_match = re.match("^([\w]+)\[([\d]+)-([\d]+)\]([\.\w]+)", name)
++        range_match = re.match(r"^([\w]+)\[([\d]+)-([\d]+)\]([\.\w]+)", name)
+         if range_match:
+             range_groups = range_match.groups()
+             if range_groups[1] and range_groups[2]:
+@@ -246,7 +246,7 @@ class utils():
+             # eg: swp[1-20].100
+             # return (prefix, range-start, range-end, suffix)
+             # eg return ("swp", 1, 20, ".100")
+-            range_match = re.match("^([\w\.]+)\[([\d]+)-([\d]+)\]", name)
++            range_match = re.match(r"^([\w\.]+)\[([\d]+)-([\d]+)\]", name)
+             if range_match:
+                 range_groups = range_match.groups()
+                 if range_groups[1] and range_groups[2]:
+diff --git a/ifupdown2/lib/iproute2.py b/ifupdown2/lib/iproute2.py
+index 543082e..bbbfb43 100644
+--- a/ifupdown2/lib/iproute2.py
++++ b/ifupdown2/lib/iproute2.py
+@@ -62,7 +62,7 @@ except Exception:
+ class IPRoute2(Cache, Requirements):
+ 
+     VXLAN_UDP_PORT = 4789
+-    VXLAN_PEER_REGEX_PATTERN = re.compile("\s+dst\s+(\d+.\d+.\d+.\d+)\s+")
++    VXLAN_PEER_REGEX_PATTERN = re.compile(r"\s+dst\s+(\d+.\d+.\d+.\d+)\s+")
+ 
+     def __init__(self):
+         Cache.__init__(self)

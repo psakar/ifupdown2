@@ -9,3 +9,4 @@ pve/0008-lacp-bond-remove-bond-min-links-0-warning.patch
 pve/0009-gvgeb-fix-python-interpreter-shebang.patch
 pve/0010-main-ignore-dpkg-files-when-running-hook-scripts.patch
 upstream/0001-add-ipv6-slaac-support-inet6-auto-accept_ra.patch
+upstream/0001-use-raw-strings-for-regex-to-fix-backslash-interpret.patch
