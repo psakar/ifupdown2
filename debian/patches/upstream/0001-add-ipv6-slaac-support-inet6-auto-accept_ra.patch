@@ -50,9 +50,10 @@ index 20f8866..a2918e9 100644
 --- a/ifupdown2/addons/address.py
 +++ b/ifupdown2/addons/address.py
 @@ -194,6 +194,18 @@ class address(AddonWithIpBlackList, moduleBase):
+                 "validvals": ['on', 'off', 'yes', 'no', '0', '1'],
                  "default": "no",
                  "aliases": ["disable-ip6"]
-             }
++            },
 +            'accept-ra': {
 +                'help': 'accept ipv6 router advertisement',
 +                'validvals': ['0', '1', '2'],
@@ -64,10 +65,9 @@ index 20f8866..a2918e9 100644
 +                'validvals': ['0', '1'],
 +                'default': '0',
 +                'example': ['autoconf 1']
-+            },
+             }
          }
      }
- 
 @@ -269,6 +281,16 @@ class address(AddonWithIpBlackList, moduleBase):
          self.logger.debug(f"policy: default_loopback_scope set to {self.default_loopback_scope}")
          self.valid_scopes = self.get_mod_subattr("scope", "validvals")
