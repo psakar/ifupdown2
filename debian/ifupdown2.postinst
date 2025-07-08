@@ -111,6 +111,9 @@ case "$1" in
         process_udev
         chmod +x /usr/share/ifupdown2/__main__.py
         postinst_remove_diverts
+        if [ ! -d /etc/iproute2/rt_tables.d ]; then
+            mkdir /etc/iproute2/rt_tables.d || echo "could not create /etc/iproute2/rt_tables.d"
+        fi
         if [ -z "$2" ] && [ ! -e /proxmox_install_mode ]; then
             proxmox_compatibility
             echo "Reloading network config on first install"
