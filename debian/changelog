@@ -1,3 +1,15 @@
+ifupdown2 (3.3.0-1+pmx5) trixie; urgency=medium
+
+  * d/postinst: ensure /etc/iproute2/rt_tables.d exists to handle edge case
+    where the iproute2 update to a version higher than 6.5.0-4 will clean up
+    the /etc/iproute2/rt_tables.d/ directory–among others–manually during its
+    upgrade. While ifupdown2 tracks this directory in its package, the removal
+    happens after ifudpown2 was unpacked, thus cirvumventing the packaging
+    system. As the configuration of the ifupdown2 package normally happens
+    after iproute2, we can re-create it there as stop-gap.
+
+ -- Proxmox Support Team <support@proxmox.com>  Wed, 09 Jul 2025 09:50:06 +0200
+
 ifupdown2 (3.3.0-1+pmx4) trixie; urgency=medium
 
   * use raw strings for regex patterns to avoid backslash misintepretation.
