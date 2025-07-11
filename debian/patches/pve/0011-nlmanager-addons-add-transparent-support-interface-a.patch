@@ -1,0 +1,629 @@
+From 594825e710bd9b33b19ba2b0f20f76076b638cc0 Mon Sep 17 00:00:00 2001
+From: Christoph Heiss <c.heiss@proxmox.com>
+Date: Fri, 11 Jul 2025 17:45:47 +0200
+Subject: [PATCH] nlmanager, addons: add transparent support interface altnames
+
+First adds support for decoding IFLA_PROP_LIST attributes in nlpacket
+via AttributeLinkPropList.
+
+Then adds transparent handling to nlcache by caching the link reference
+for the primary ifname as well as for each altname of the respective
+interface.
+
+nlmanager by extension itself already handles altnames well, as using
+IFLA_IFNAME in netlink requests already considers interface altnames.
+
+Finally, go through property on each addon which can take interface
+name(s) and add the appropriate translation there too.
+
+Signed-off-by: Christoph Heiss <c.heiss@proxmox.com>
+---
+ ifupdown2/addons/bond.py             |   3 +-
+ ifupdown2/addons/bridge.py           |  14 ----
+ ifupdown2/addons/openvswitch.py      |   1 +
+ ifupdown2/addons/openvswitch_port.py |  31 +++++---
+ ifupdown2/addons/vlan.py             |  15 +++-
+ ifupdown2/ifupdown/ifupdownmain.py   |  23 ++++--
+ ifupdown2/lib/addon.py               |   9 +--
+ ifupdown2/lib/nlcache.py             | 102 +++++++++++++++++++++++++++
+ ifupdown2/nlmanager/nlmanager.py     |  15 ++++
+ ifupdown2/nlmanager/nlpacket.py      |  63 +++++++++++++++++
+ 10 files changed, 240 insertions(+), 36 deletions(-)
+
+diff --git a/ifupdown2/addons/bond.py b/ifupdown2/addons/bond.py
+index 2af5cf6..ef6d37a 100644
+--- a/ifupdown2/addons/bond.py
++++ b/ifupdown2/addons/bond.py
+@@ -277,6 +277,7 @@ class bond(Addon, moduleBase):
+             except Exception as e:
+                 self.logger.info("bond: error while loading bonding module: %s" % str(e))
+ 
++        # get_ifindex() always returns the primary ifname, so no need for translating
+         self._bond_attr_ifquery_check_translate_func[Link.IFLA_BOND_PRIMARY] = self.cache.get_ifindex
+         self._bond_attr_set_list = self._bond_attr_set_list + (('bond-primary', Link.IFLA_BOND_PRIMARY, self.cache.get_ifindex),)
+ 
+@@ -292,7 +293,7 @@ class bond(Addon, moduleBase):
+ 
+     def get_bond_slaves(self, ifaceobj):
+         # bond-ports aliases should be translated to bond-slaves
+-        return ifaceobj.get_attr_value_first('bond-slaves')
++        return self.cache.link_translate_altname(ifaceobj.get_attr_value_first('bond-slaves'))
+ 
+     def _is_bond(self, ifaceobj):
+         # at first link_kind is not set but once ifupdownmain
+diff --git a/ifupdown2/addons/bridge.py b/ifupdown2/addons/bridge.py
+index 87bcda9..1da8de7 100644
+--- a/ifupdown2/addons/bridge.py
++++ b/ifupdown2/addons/bridge.py
+@@ -1134,20 +1134,6 @@ class bridge(Bridge, moduleBase):
+             return None
+         return self.cache.get_slaves(ifaceobj.name)
+ 
+-    def _get_bridge_port_list(self, ifaceobj):
+-
+-        # port list is also available in the previously
+-        # parsed dependent list. Use that if available, instead
+-        # of parsing port expr again
+-        port_list = ifaceobj.lowerifaces
+-        if port_list:
+-            return port_list
+-        ports = self._get_ifaceobj_bridge_ports(ifaceobj)
+-        if ports:
+-            return self.parse_port_list(ifaceobj.name, ports)
+-        else:
+-            return None
+-
+     def _get_bridge_port_list_user_ordered(self, ifaceobj):
+         # When enslaving bridge-ports we need to return the exact user
+         # configured bridge ports list (bridge will inherit the mac of the
+diff --git a/ifupdown2/addons/openvswitch.py b/ifupdown2/addons/openvswitch.py
+index 40fc36a..24483aa 100644
+--- a/ifupdown2/addons/openvswitch.py
++++ b/ifupdown2/addons/openvswitch.py
+@@ -104,6 +104,7 @@ class openvswitch(Addon, moduleBase):
+             ovs_ports.extend(port.split())
+ 
+         if ovs_ports:
++            ovs_ports = self.cache.link_translate_altnames(ovs_ports)
+             return self.parse_port_list(ifaceobj.name, ' '.join(ovs_ports))
+         else:
+             return None
+diff --git a/ifupdown2/addons/openvswitch_port.py b/ifupdown2/addons/openvswitch_port.py
+index ae8549a..02bd737 100644
+--- a/ifupdown2/addons/openvswitch_port.py
++++ b/ifupdown2/addons/openvswitch_port.py
+@@ -94,15 +94,28 @@ class openvswitch_port(Addon, moduleBase):
+ 
+     def _is_ovs_port (self, ifaceobj):
+         ovstype = ifaceobj.get_attr_value_first ('ovs-type')
+-        ovsbridge = ifaceobj.get_attr_value_first ('ovs-bridge')
++        ovsbridge = self._get_ovs_bridge(ifaceobj)
+         if ovstype and ovsbridge:
+             return True
+         return False
+ 
++    def _get_ovs_bridge(self, ifaceobj):
++        """
++        Returns the ifname of the `ovs-bridge` property. Translates altnames
++        to the primary ifname if needed.
++        :param ifaceobj: interface config object
++        :return: `ovs-bridge` ifname
++        """
++        ifname = ifaceobj.get_attr_value_first('ovs-bridge')
++        if ifname:
++            return self.cache.link_translate_altname(ifname)
++        return None
++
+     def _get_bond_ifaces (self, ifaceobj):
+         ovs_bonds = ifaceobj.get_attr_value_first ('ovs-bonds')
+         if ovs_bonds:
+-            return sorted (ovs_bonds.split ())
++            ovs_bonds = self.cache.link_translate_altnames(ovs_bonds.split())
++            return sorted(ovs_bonds)
+         return None
+ 
+     def _ovs_vsctl(self, ifaceobj, cmdlist):
+@@ -129,10 +142,13 @@ class openvswitch_port(Addon, moduleBase):
+ 
+     def _addport (self, ifaceobj):
+         iface = ifaceobj.name
+-        ovsbridge = ifaceobj.get_attr_value_first ('ovs-bridge')
++        ovsbridge = self._get_ovs_bridge(ifaceobj)
+         ovsoptions = ifaceobj.get_attr_value_first ('ovs-options')
+         ovstype = ifaceobj.get_attr_value_first ('ovs-type')
+-        ovsbonds = ifaceobj.get_attr_value_first ('ovs-bonds')
++
++        ovsbonds_list = self._get_bond_ifaces(ifaceobj)
++        ovsbonds = ' '.join(ovsbonds_list) if ovsbonds_list else None
++
+         ovsextra = ifaceobj.get_attr_value('ovs-extra')
+ 
+         cmd_list = []
+@@ -183,11 +199,10 @@ class openvswitch_port(Addon, moduleBase):
+ 
+         #mtu
+         ovsmtu = ifaceobj.get_attr_value_first ('ovs-mtu')
+-        ovsbonds_list = self._get_bond_ifaces(ifaceobj)
+         if ovsmtu is not None:
+             #we can't set mtu on bond fake interface, we apply it on slaves interfaces
+             if ovstype == 'OVSBond' and ovsbonds_list is not None:
+-                for slave in ovsbonds_list: 
++                for slave in ovsbonds_list:
+                     cmd = "set Interface %s mtu_request=%s"%(slave,ovsmtu)
+                     cmd_list.append(cmd)
+ 
+@@ -207,7 +222,7 @@ class openvswitch_port(Addon, moduleBase):
+ 
+     def _delport (self, ifaceobj):
+         iface = ifaceobj.name
+-        ovsbridge = ifaceobj.get_attr_value_first ('ovs-bridge')
++        ovsbridge = self._get_ovs_bridge(ifaceobj)
+         cmd = "--if-exists del-port %s %s"%(ovsbridge, iface)
+ 
+         self._ovs_vsctl(ifaceobj, [cmd])
+@@ -219,7 +234,7 @@ class openvswitch_port(Addon, moduleBase):
+ 
+         ifaceobj.link_privflags |= ifaceLinkPrivFlags.OPENVSWITCH
+ 
+-        ovsbridge = ifaceobj.get_attr_value_first ('ovs-bridge')
++        ovsbridge = self._get_ovs_bridge(ifaceobj)
+         return [ovsbridge]
+ 
+     def _up (self, ifaceobj):
+diff --git a/ifupdown2/addons/vlan.py b/ifupdown2/addons/vlan.py
+index 4380dd8..a53b2f9 100644
+--- a/ifupdown2/addons/vlan.py
++++ b/ifupdown2/addons/vlan.py
+@@ -64,8 +64,17 @@ class vlan(Addon, moduleBase):
+         Addon.__init__(self)
+         moduleBase.__init__(self, *args, **kargs)
+ 
++    def _get_vlan_raw_device_first(self, ifaceobj):
++        """
++        Returns the ifname of the `vlan-raw-device` property. Translates
++        altnames to the primary ifname if needed.
++        :param ifaceobj: interface config object
++        :return: `vlan-raw-device` ifname
++        """
++        return self.cache.link_translate_altname(ifaceobj.get_attr_value_first('vlan-raw-device'))
++
+     def _is_vlan_device(self, ifaceobj):
+-        vlan_raw_device = ifaceobj.get_attr_value_first('vlan-raw-device')
++        vlan_raw_device = self._get_vlan_raw_device_first(ifaceobj)
+         if vlan_raw_device:
+             return True
+         elif '.' in ifaceobj.name:
+@@ -176,7 +185,7 @@ class vlan(Addon, moduleBase):
+             vlan_exists = self.cache.link_exists(ifaceobj.name)
+ 
+             if vlan_exists:
+-                user_vlan_raw_device = ifaceobj.get_attr_value_first('vlan-raw-device')
++                user_vlan_raw_device = self._get_vlan_raw_device_first(ifaceobj)
+                 cached_vlan_raw_device = self.cache.get_lower_device_ifname(ifname)
+ 
+                 if cached_vlan_raw_device and user_vlan_raw_device and cached_vlan_raw_device != user_vlan_raw_device:
+@@ -239,7 +248,7 @@ class vlan(Addon, moduleBase):
+             ifaceobjcurr.update_config_with_status(
+                 'vlan-raw-device',
+                 cached_vlan_raw_device,
+-                cached_vlan_raw_device != ifaceobj.get_attr_value_first('vlan-raw-device')
++                cached_vlan_raw_device != self._get_vlan_raw_device_first(ifaceobj)
+             )
+ 
+             #
+diff --git a/ifupdown2/ifupdown/ifupdownmain.py b/ifupdown2/ifupdown/ifupdownmain.py
+index 1b034d1..97a83f7 100644
+--- a/ifupdown2/ifupdown/ifupdownmain.py
++++ b/ifupdown2/ifupdown/ifupdownmain.py
+@@ -228,7 +228,7 @@ class ifupdownMain:
+             pass
+ 
+     def link_exists(self, ifacename):
+-        return os.path.exists('/sys/class/net/%s' %ifacename)
++        return self.netlink.link_exists(ifacename)
+ 
+     def __init__(self, config={}, args=None,
+                  daemon=False, force=False, dryrun=False, nowait=False,
+@@ -498,14 +498,18 @@ class ifupdownMain:
+                                increfcnt=False):
+         """ creates a iface object and adds it to the iface dictionary """
+         ifaceobj = iface()
+-        ifaceobj.name = ifacename
++        ifaceobj.name = self.netlink.link_translate_altname(ifacename)
+         ifaceobj.priv_flags = priv_flags
+         ifaceobj.auto = True
+         if not self._link_master_slave:
+             ifaceobj.link_type = ifaceLinkType.LINK_NA
+         if increfcnt:
+             ifaceobj.inc_refcnt()
++
+         self.ifaceobjdict[ifacename] = [ifaceobj]
++        for altname in self.netlink.link_get_altnames(ifacename):
++            self.ifaceobjdict[ifacename] = [ifaceobj]
++
+         return ifaceobj
+ 
+     def create_n_save_ifaceobjcurr(self, ifaceobj):
+@@ -513,13 +517,17 @@ class ifupdownMain:
+             dict containing current iface objects
+         """
+         ifaceobjcurr = iface()
+-        ifaceobjcurr.name = ifaceobj.name
++        ifaceobjcurr.name = self.netlink.link_translate_altname(ifaceobj.name)
+         ifaceobjcurr.type = ifaceobj.type
+         ifaceobjcurr.lowerifaces = ifaceobj.lowerifaces
+         ifaceobjcurr.priv_flags = copy.deepcopy(ifaceobj.priv_flags)
+         ifaceobjcurr.auto = ifaceobj.auto
++
+         self.ifaceobjcurrdict.setdefault(ifaceobj.name,
+                                      []).append(ifaceobjcurr)
++        for altname in self.netlink.link_get_altnames(ifaceobj.name):
++            self.ifaceobjcurrdict.setdefault(altname, []).append(ifaceobjcurr)
++
+         return ifaceobjcurr
+ 
+     def get_ifaceobjcurr(self, ifacename, idx=0):
+@@ -722,7 +730,7 @@ class ifupdownMain:
+                 self.logger.warning("%s: %s: error getting dependent interfaces (%s)" % (ifaceobj.name, module, str(e)))
+                 dlist = None
+             if dlist: ret_dlist.extend(dlist)
+-        return list(set(ret_dlist))
++        return self.netlink.link_translate_altnames(list(set(ret_dlist)))
+ 
+     def query_upperifaces(self, ifaceobj, ops, ifacenames, type=None):
+         """ Gets iface upperifaces by calling into respective modules """
+@@ -746,7 +754,7 @@ class ifupdownMain:
+                 ulist = None
+                 pass
+             if ulist: ret_ulist.extend(ulist)
+-        return list(set(ret_ulist))
++        return self.netlink.link_translate_altnames(list(set(ret_ulist)))
+ 
+     def _remove_circular_veth_dependencies(self, ifaceobj, dlist):
+         # if ifaceobj isn't a veth link, ignore it.
+@@ -1881,7 +1889,10 @@ class ifupdownMain:
+                     auto = False
+                     break
+ 
+-            if not ifupdownflags.flags.DRYRUN and auto and not os.path.exists("/sys/class/net/%s" % ifname) and not self._is_ifaceobj_bridge_vlan(ifaceobj_list):
++            if (not ifupdownflags.flags.DRYRUN
++                    and auto
++                    and not self.link_exists(ifname)
++                    and not self._is_ifaceobj_bridge_vlan(ifaceobj_list)):
+                 self.logger.warning("%s: interface not recognized - please check interface configuration" % ifname)
+ 
+     def _is_ifaceobj_bridge_vlan(self, ifaceobj_list):
+diff --git a/ifupdown2/lib/addon.py b/ifupdown2/lib/addon.py
+index 47e42c7..77056b2 100644
+--- a/ifupdown2/lib/addon.py
++++ b/ifupdown2/lib/addon.py
+@@ -166,13 +166,13 @@ class Bridge(Addon):
+                 and len(self._get_ifaceobj_bridge_ports(ifaceobj, as_list=True)) == 1:
+             ifaceobj.link_privflags |= ifaceLinkPrivFlags.BRIDGE_l3VNI
+ 
+-    @staticmethod
+-    def _get_ifaceobj_bridge_ports(ifaceobj, as_list=False):
++    def _get_ifaceobj_bridge_ports(self, ifaceobj, as_list=False):
+         bridge_ports = []
+ 
+         for brport in ifaceobj.get_attr_value('bridge-ports') or []:
+             if brport != 'none':
+                 bridge_ports.extend(brport.split())
++        bridge_ports = self.cache.link_translate_altnames(bridge_ports)
+ 
+         if as_list:
+             return bridge_ports
+@@ -185,14 +185,15 @@ class Bridge(Addon):
+         # of parsing port expr again
+         port_list = ifaceobj.lowerifaces
+         if port_list:
+-            return port_list
++            return self.cache.link_translate_altnames(port_list)
++
+         ports = self._get_ifaceobj_bridge_ports(ifaceobj)
+         if ports:
++            # _get_ifaceobj_bridge_ports() already translates altnames
+             return self.parse_port_list(ifaceobj.name, ports)
+         else:
+             return None
+ 
+-
+ class AddonWithIpBlackList(Addon):
+     try:
+         ip_blacklist = [ipnetwork.IPNetwork(ip).ip for ip in policymanager.policymanager_api.get_module_globals(
+diff --git a/ifupdown2/lib/nlcache.py b/ifupdown2/lib/nlcache.py
+index 8d67cba..e5a42ef 100644
+--- a/ifupdown2/lib/nlcache.py
++++ b/ifupdown2/lib/nlcache.py
+@@ -804,6 +804,44 @@ class _NetlinkCache:
+         except TypeError as e:
+             return self.__handle_type_error(inspect.currentframe().f_code.co_name, ifname, str(e), return_value=default)
+ 
++    def link_get_altnames(self, ifname):
++        """
++        Returns the list of altnames for the given interface.
++        :param ifname:
++        :return: list[str]
++        """
++        proplist = self.get_link_attribute(ifname, Link.IFLA_PROP_LIST, default={})
++        if Link.IFLA_ALT_IFNAME in proplist:
++            return proplist[Link.IFLA_ALT_IFNAME]
++        return []
++
++    def link_translate_altname(self, ifname):
++        """
++        Translates a interface name into the respective primary interface name,
++        if needed. Effectively no-op if ifname is already the primary name.
++        :param ifname: interface name
++        :return: primary interface names
++        """
++        if ifname:
++            return self.get_link_attribute(ifname, Link.IFLA_IFNAME, default=ifname)
++        return None
++
++    def link_translate_altnames(self, ifnames):
++        """
++        Translates all interface altnames in the given list into their respective
++        primary ifnames.
++        :param ifnames: list of interface names
++        :return: list of interface names which only contains primary interface names
++        """
++        if ifnames is None:
++            return None
++
++        with self._cache_lock:
++            return list(map(
++                lambda ifname: self.get_link_attribute(ifname, Link.IFLA_IFNAME, default=ifname),
++                ifnames
++            ))
++
+     ################
+     # MASTER & SLAVE
+     ################
+@@ -1265,6 +1303,13 @@ class _NetlinkCache:
+         # dictionaries if the master has changed or was un-enslaved.
+         old_ifla_master = None
+ 
++        try:
++            proplist = link.get_attribute_value(Link.IFLA_PROP_LIST)
++            ifaltnames = proplist[Link.IFLA_ALT_IFNAME]
++        except (AttributeError, TypeError):
++            # no altnames no this link
++            ifaltnames = []
++
+         with self._cache_lock:
+ 
+             # do we have a wait event registered for RTM_NEWLINK this ifname
+@@ -1288,6 +1333,14 @@ class _NetlinkCache:
+ 
+             self._link_cache[ifname] = link
+ 
++            # For each altname, also cache the reference to the `Link` object
++            # it under that name.
++            # _cache_lock already ensures no concurrent access to the same
++            # interface through different names.
++            for altname in ifaltnames:
++                log.debug(f'registering {altname} as altname for {ifname}')
++                self._link_cache[altname] = link
++
+             ######################################################
+             # update helper dictionaries and handle link renamed #
+             ######################################################
+@@ -1299,6 +1352,9 @@ class _NetlinkCache:
+                 # in get_ifname/get_ifindex/get_master to do the work.
+ 
+                 self._ifindex_by_ifname[ifname] = ifindex
++                # For mapping ifname -> ifindex, also consider altnames
++                for altname in ifaltnames:
++                    self._ifindex_by_ifname[altname] = ifindex
+ 
+                 rename_detected                 = False
+                 old_ifname_entry_for_ifindex    = self._ifname_by_ifindex.get(ifindex)
+@@ -1309,6 +1365,7 @@ class _NetlinkCache:
+                     # renamed. We need to update the cache accordingly.
+                     rename_detected = True
+ 
++                # ifindex will just map to the primary ifname
+                 self._ifname_by_ifindex[ifindex] = ifname
+ 
+                 if rename_detected:
+@@ -1547,9 +1604,17 @@ class _NetlinkCache:
+                     self._ignore_rtm_newlinkq.remove(ifname)
+             except ValueError:
+                 pass
++
++            try:
++                proplist = link.get_attribute_value(Link.IFLA_PROP_LIST)
++                ifaltnames = proplist[Link.IFLA_ALT_IFNAME]
++            except (AttributeError, TypeError):
++                # no altnames no this link
++                ifaltnames = []
+         else:
+             ifname = link_ifname
+             ifindex = link_ifindex
++            ifaltnames = []
+ 
+         link_ifla_master = None
+         # when an enslaved device is removed we receive the RTM_DELLINK
+@@ -1578,6 +1643,17 @@ class _NetlinkCache:
+                 # KeyError means that the link doesn't exists in the cache
+                 log.debug('del _link_cache: KeyError ifname: %s' % ifname)
+ 
++            # also delete altnames
++            for altname in ifaltnames:
++                try:
++                    del self._link_cache[altname]
++                except KeyError:
++                    # link is not present under the altname in the cache
++                    log.debug(f'{altname} not present in _link_cache as altname for {ifname}?')
++                    pass
++
++            # for the rest of caches here, only the primary ifname is ever used
++
+             try:
+                 # like in __unslave_nolock() we need to make sure that all deleted link
+                 # have their bridge-vlans and _slaves_master entries cleared.
+@@ -1606,6 +1682,12 @@ class _NetlinkCache:
+             except KeyError:
+                 log.debug('del _ifindex_by_ifname: KeyError ifname: %s' % ifname)
+ 
++            for altname in ifaltnames:
++                try:
++                    del self._ifindex_by_ifname[altname]
++                except KeyError:
++                    log.debug('del _ifindex_by_ifname: KeyError ifaltname: %s' % altname)
++
+             try:
+                 del self._addr_cache[ifname]
+             except KeyError:
+@@ -1627,6 +1709,12 @@ class _NetlinkCache:
+                     log.debug('_masters_and_slaves[if%s].remove(%s): KeyError' % (link_ifla_master, ifname))
+ 
+     def _address_get_ifname_and_ifindex(self, addr):
++        """
++        Returns the primary ifname and ifindex of the interface the given address
++        belongs too.
++        :param addr: address to inspect
++        :return: ifname and ifindex the specified address belongs to
++        """
+         ifindex = addr.ifindex
+         label = addr.get_attribute_value(Address.IFA_LABEL)
+ 
+@@ -3200,6 +3288,20 @@ class NetlinkListenerWithCache(nllistener.NetlinkManagerWithListener, BaseObject
+         self.log_info_ifname_dry_run(ifname, "netlink: ip link set dev %s: bridge port attributes" % ifname)
+         self.logger.debug("attributes: %s" % ifla_info_slave_data)
+ 
++    ###
++
++    def link_exists(self, ifname):
++        return self.cache.link_exists(ifname)
++
++    def link_get_altnames(self, ifname):
++        return self.cache.link_get_altnames(ifname)
++
++    def link_translate_altname(self, ifname):
++        return self.cache.link_translate_altname(ifname)
++
++    def link_translate_altnames(self, ifnames):
++        return self.cache.link_translate_altnames(ifnames)
++
+     ############################################################################
+     # ADDRESS
+     ############################################################################
+diff --git a/ifupdown2/nlmanager/nlmanager.py b/ifupdown2/nlmanager/nlmanager.py
+index 5e0cd8e..d57ddcf 100644
+--- a/ifupdown2/nlmanager/nlmanager.py
++++ b/ifupdown2/nlmanager/nlmanager.py
+@@ -584,6 +584,21 @@ class NetlinkManager(object):
+             return iface.attributes[Link.IFLA_IFNAME].get_pretty_value(str)
+         return None
+ 
++    def get_iface_altnames(self, ifindex):
++        """
++        Returns the list of altnames for the specified interface.
++        :param ifindex: Index of the network interface
++        :return: List of interface altnames
++        """
++        iface = self._get_iface_by_index(ifindex)
++
++        if iface and Link.IFLA_PROP_LIST in iface.attributes:
++            proplist = iface.get_attribute_value(Link.IFLA_PROP_LIST)
++            if Link.IFLA_ALT_IFNAME in proplist:
++                return proplist[Link.IFLA_ALT_IFNAME]
++
++        return []
++
+     def link_dump(self, ifname=None):
+         debug = RTM_GETLINK in self.debug
+         msg = Link(RTM_GETLINK, debug, use_color=self.use_color)
+diff --git a/ifupdown2/nlmanager/nlpacket.py b/ifupdown2/nlmanager/nlpacket.py
+index 4d6a4c4..95d59dc 100644
+--- a/ifupdown2/nlmanager/nlpacket.py
++++ b/ifupdown2/nlmanager/nlpacket.py
+@@ -3486,6 +3486,49 @@ class AttributeIFLA_PROTINFO(Attribute):
+         return value_pretty
+ 
+ 
++class AttributeLinkPropList(Attribute):
++    """
++    IFLA_PROP_LIST - list of (additional) interface properties.
++    """
++    def __init__(self, atype, string, family, logger):
++        Attribute.__init__(self, atype, string, logger)
++        self.family = family
++
++    def decode(self, parent_msg, data):
++        self.decode_length_type(data)
++        self.value = {}
++
++        data = self.data[4:]
++
++        while data:
++            (sub_attr_length, sub_attr_type) = unpack('=HH', data[:4])
++            sub_attr_end = padded_length(sub_attr_length)
++
++            if not sub_attr_length:
++                self.log.error('parsed a zero length sub-attr')
++                continue
++
++            (attr_name, AttrClass) = Link.attribute_to_class[sub_attr_type]
++            attr = AttrClass(sub_attr_type, attr_name, self.family, self.log)
++            attr.decode(self, data[:sub_attr_end])
++
++            if sub_attr_type in self.value:
++                self.value[sub_attr_type].append(attr.value)
++            else:
++                self.value[sub_attr_type] = [attr.value]
++
++            data = data[sub_attr_end:]
++
++    def get_pretty_value(self, obj=None):
++        if obj and callable(obj):
++            return obj(self.value)
++
++        value_pretty = {}
++        for (sub_key, sub_value) in self.value.items():
++            sub_key_pretty = "(%2d) %s" % (sub_key, Link.attribute_to_class[sub_key][0])
++            value_pretty[sub_key_pretty] = sub_value
++
++        return value_pretty
+ 
+ class NetlinkPacket(object):
+     """
+@@ -4185,6 +4228,16 @@ class Link(NetlinkPacket, NetlinkPacket_IFLA_LINKINFO_Attributes):
+     IFLA_NEW_IFINDEX        = 49
+     IFLA_MIN_MTU            = 50
+     IFLA_MAX_MTU            = 51
++    IFLA_PROP_LIST           = 52
++    IFLA_ALT_IFNAME          = 53
++    IFLA_PERM_ADDRESS        = 54
++    IFLA_PROTO_DOWN_REASON   = 55
++    IFLA_PARENT_DEV_NAME     = 56
++    IFLA_PARENT_DEV_BUS_NAME = 57
++    IFLA_GRO_MAX_SIZE        = 58
++    IFLA_TSO_MAX_SIZE        = 59
++    IFLA_TSO_MAX_SEGS        = 60
++    IFLA_ALLMULTI            = 61
+ 
+     attribute_to_class = {
+         IFLA_UNSPEC          : ('IFLA_UNSPEC', AttributeGeneric),
+@@ -4239,6 +4292,16 @@ class Link(NetlinkPacket, NetlinkPacket_IFLA_LINKINFO_Attributes):
+         IFLA_NEW_IFINDEX        : ('IFLA_NEW_IFINDEX', AttributeFourByteValue),
+         IFLA_MIN_MTU            : ('IFLA_MIN_MTU', AttributeFourByteValue),
+         IFLA_MAX_MTU            : ('IFLA_MAX_MTU', AttributeFourByteValue),
++        IFLA_PROP_LIST           : ('IFLA_PROP_LIST', AttributeLinkPropList),
++        IFLA_ALT_IFNAME          : ('IFLA_ALT_IFNAME', AttributeString),
++        IFLA_PERM_ADDRESS        : ('IFLA_PERM_ADDRESS', AttributeMACAddress),
++        IFLA_PROTO_DOWN_REASON   : ('IFLA_PROTO_DOWN_REASON', AttributeFourByteValue),
++        IFLA_PARENT_DEV_NAME     : ('IFLA_PARENT_DEV_NAME', AttributeString),
++        IFLA_PARENT_DEV_BUS_NAME : ('IFLA_PARENT_DEV_BUS_NAME', AttributeString),
++        IFLA_GRO_MAX_SIZE        : ('IFLA_GRO_MAX_SIZE', AttributeFourByteValue),
++        IFLA_TSO_MAX_SIZE        : ('IFLA_TSO_MAX_SIZE', AttributeFourByteValue),
++        IFLA_TSO_MAX_SEGS        : ('IFLA_TSO_MAX_SEGS', AttributeFourByteValue),
++        IFLA_ALLMULTI            : ('IFLA_ALLMULTI', AttributeFourByteValue),
+     }
+ 
+     # Link flags
+-- 
+2.49.0
+
