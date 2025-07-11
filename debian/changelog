@@ -1,3 +1,14 @@
+ifupdown2 (3.3.0-1+pmx6) trixie; urgency=medium
+
+  * add transparent network interface altname support, similar to modern
+    iproute2 tooling. This reduces frictions for changes in the primary
+    interface name, e.g., due to newer systemd naming-scheme versions.
+    One can also use more persistent names, like the MAC address based names
+    in the configurations while still leveraging the shorter names where
+    useful or required.
+
+ -- Proxmox Support Team <support@proxmox.com>  Fri, 11 Jul 2025 20:06:01 +0200
+
 ifupdown2 (3.3.0-1+pmx5) trixie; urgency=medium
 
   * d/postinst: ensure /etc/iproute2/rt_tables.d exists to handle edge case
