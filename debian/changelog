@@ -1,3 +1,9 @@
+ifupdown2 (3.3.0-1+pmx7) trixie; urgency=medium
+
+  * d/postinst: create parent directory for /etc/iproute2/rt_tables.d
+
+ -- Proxmox Support Team <support@proxmox.com>  Fri, 18 Jul 2025 14:24:59 +0200
+
 ifupdown2 (3.3.0-1+pmx6) trixie; urgency=medium
 
   * add transparent network interface altname support, similar to modern
