@@ -1,3 +1,10 @@
+ifupdown2 (3.3.0-1+pmx8) trixie; urgency=medium
+
+  * transparent altname support: fix issue when reloading bonds with altname
+    slaves.
+
+ -- Proxmox Support Team <support@proxmox.com>  Wed, 30 Jul 2025 19:16:00 +0200
+
 ifupdown2 (3.3.0-1+pmx7) trixie; urgency=medium
 
   * d/postinst: create parent directory for /etc/iproute2/rt_tables.d
