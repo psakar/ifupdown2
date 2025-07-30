@@ -51,6 +51,17 @@ index 2af5cf6..ef6d37a 100644
  
      def _is_bond(self, ifaceobj):
          # at first link_kind is not set but once ifupdownmain
+@@ -301,6 +302,10 @@
+                or ifaceobj.get_attr_value_first("bond-mode") \
+                or self.get_bond_slaves(ifaceobj)
+ 
++    def parse_port_list(self, ifacename, port_expr, ifacenames=None):
++        port_list = super().parse_port_list(ifacename, port_expr, ifacenames)
++        return self.cache.link_translate_altnames(port_list)
++
+     def get_dependent_ifacenames(self, ifaceobj, ifacenames_all=None, old_ifaceobjs=False):
+         """ Returns list of interfaces dependent on ifaceobj """
+ 
 diff --git a/ifupdown2/addons/bridge.py b/ifupdown2/addons/bridge.py
 index 87bcda9..1da8de7 100644
 --- a/ifupdown2/addons/bridge.py
