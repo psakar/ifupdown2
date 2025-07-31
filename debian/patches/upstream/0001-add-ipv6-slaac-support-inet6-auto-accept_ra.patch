@@ -1,4 +1,4 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 38dadc7048726671b8e1bf6c63a3313720afeaf9 Mon Sep 17 00:00:00 2001
 From: Alexandre Derumier <aderumier@odiso.com>
 Date: Tue, 9 May 2023 17:48:14 +0200
 Subject: [PATCH] add ipv6 slaac support (inet6 auto && accept_ra)
@@ -12,9 +12,10 @@ upstream pull request:
 https://github.com/CumulusNetworks/ifupdown2/pull/259
 Signed-off-by: Alexandre Derumier <aderumier@odiso.com>
 Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
+Signed-off-by: Christoph Heiss <c.heiss@proxmox.com>
 ---
  etc/network/ifupdown2/addons.conf       |   2 +
- ifupdown2/addons/address.py             | 107 +++++++++++++--
+ ifupdown2/addons/address.py             | 108 +++++++++++++--
  ifupdown2/addons/auto.py                | 168 ++++++++++++++++++++++++
  ifupdown2/addons/dhcp.py                |  18 +--
  ifupdown2/ifupdown/iface.py             |   4 +
@@ -22,7 +23,7 @@ Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
  ifupdown2/lib/nlcache.py                |  63 ++++++++-
  ifupdown2/man/interfaces.5.rst          |   9 ++
  ifupdown2/nlmanager/nlpacket.py         |  24 +++-
- 9 files changed, 371 insertions(+), 26 deletions(-)
+ 9 files changed, 372 insertions(+), 26 deletions(-)
  create mode 100644 ifupdown2/addons/auto.py
 
 diff --git a/etc/network/ifupdown2/addons.conf b/etc/network/ifupdown2/addons.conf
@@ -46,10 +47,10 @@ index a8f2317..5a3964d 100644
  down,address
  down,usercmds
 diff --git a/ifupdown2/addons/address.py b/ifupdown2/addons/address.py
-index 20f8866..a2918e9 100644
+index c19b138..3ab8309 100644
 --- a/ifupdown2/addons/address.py
 +++ b/ifupdown2/addons/address.py
-@@ -194,6 +194,18 @@ class address(AddonWithIpBlackList, moduleBase):
+@@ -193,6 +193,18 @@ class address(AddonWithIpBlackList, moduleBase):
                  "validvals": ['on', 'off', 'yes', 'no', '0', '1'],
                  "default": "no",
                  "aliases": ["disable-ip6"]
@@ -133,12 +134,14 @@ index 20f8866..a2918e9 100644
              if netconf_ipv4_forwarding:
                  self.sysctl_write_forwarding_value_to_proc(ifname, "ipv4", 0)
              if netconf_ipv6_forwarding:
-@@ -911,6 +945,43 @@ class address(AddonWithIpBlackList, moduleBase):
+@@ -911,6 +945,44 @@ class address(AddonWithIpBlackList, moduleBase):
      def sysctl_write_forwarding_value_to_proc(self, ifname, family, value):
          self.write_file("/proc/sys/net/%s/conf/%s/forwarding" % (family, ifname), "%s\n" % value)
  
 +    def _sysctl_slaac(self, ifaceobj):
++        ifacename = self.cache.link_translate_altname(ifaceobj.name)
 +        addr_method = ifaceobj.addr_method
++
 +        if addr_method not in ["auto"]:
 +
 +            try:
@@ -151,9 +154,9 @@ index 20f8866..a2918e9 100644
 +
 +                if running_accept_ra != accept_ra:
 +                    self.sysctl_set('net.ipv6.conf.%s.accept_ra'
-+                                    %('/'.join(ifaceobj.name.split("."))),
++                                    %('/'.join(ifacename.split("."))),
 +                                    accept_ra)
-+                    self.cache.update_link_inet6_accept_ra(ifaceobj.name, accept_ra)
++                    self.cache.update_link_inet6_accept_ra(ifacename, accept_ra)
 +
 +                running_autoconf = self.cache.get_link_inet6_autoconf(ifaceobj)
 +                if running_autoconf == '':
@@ -164,29 +167,28 @@ index 20f8866..a2918e9 100644
 +
 +                if running_autoconf != autoconf:
 +                    self.sysctl_set('net.ipv6.conf.%s.autoconf'
-+                                    %('/'.join(ifaceobj.name.split("."))),
++                                    %('/'.join(ifacename.split("."))),
 +                                    autoconf)
-+                    self.cache.update_link_inet6_autoconf(ifaceobj.name, autoconf)
++                    self.cache.update_link_inet6_autoconf(ifacename, autoconf)
 +
 +            except Exception as e:
-+                if not setting_default_value:
-+                    ifaceobj.status = ifaceStatus.ERROR
-+                    self.logger.error('%s: %s' %(ifaceobj.name, str(e)))
++                ifaceobj.status = ifaceStatus.ERROR
++                self.logger.error('%s: %s' %(ifacename, str(e)))
 +
 +
      def _sysctl_config(self, ifaceobj):
+         ifacename = self.cache.link_translate_altname(ifaceobj.name)
          setting_default_value = False
-         mpls_enable = ifaceobj.get_attr_value_first('mpls-enable');
-@@ -1004,6 +1075,8 @@ class address(AddonWithIpBlackList, moduleBase):
+@@ -1005,6 +1077,8 @@ class address(AddonWithIpBlackList, moduleBase):
                         ifaceobj.status = ifaceStatus.ERROR
-                        self.logger.error('%s: %s' %(ifaceobj.name, str(e)))
+                        self.logger.error('%s: %s' %(ifacename, str(e)))
  
 +        self._sysctl_slaac(ifaceobj)
 +
      def process_mtu(self, ifaceobj, ifaceobj_getfunc):
  
          if ifaceobj.link_privflags & ifaceLinkPrivFlags.OPENVSWITCH:
-@@ -1041,7 +1114,7 @@ class address(AddonWithIpBlackList, moduleBase):
+@@ -1042,7 +1116,7 @@ class address(AddonWithIpBlackList, moduleBase):
              # no need to go further during perfmode (boot)
              return
  
@@ -195,7 +197,7 @@ index 20f8866..a2918e9 100644
              return
  
          if not user_configured_ipv6_addrgen:
-@@ -1268,7 +1341,7 @@ class address(AddonWithIpBlackList, moduleBase):
+@@ -1269,7 +1343,7 @@ class address(AddonWithIpBlackList, moduleBase):
              if not self.cache.link_exists(ifaceobj.name):
                  return
              addr_method = ifaceobj.addr_method
@@ -204,7 +206,7 @@ index 20f8866..a2918e9 100644
                  if ifaceobj.get_attr_value_first('address-purge')=='no':
                      addrlist = ifaceobj.get_attr_value('address')
                      for addr in addrlist or []:
-@@ -1381,6 +1454,22 @@ class address(AddonWithIpBlackList, moduleBase):
+@@ -1382,6 +1456,22 @@ class address(AddonWithIpBlackList, moduleBase):
              ifaceobjcurr.update_config_with_status('mpls-enable',
                                                     running_mpls_enable,
                                              mpls_enable != running_mpls_enable)
@@ -227,7 +229,7 @@ index 20f8866..a2918e9 100644
          return
  
      def query_check_ipv6_addrgen(self, ifaceobj, ifaceobjcurr):
-@@ -1451,7 +1540,7 @@ class address(AddonWithIpBlackList, moduleBase):
+@@ -1452,7 +1542,7 @@ class address(AddonWithIpBlackList, moduleBase):
  
      def _query_check_address(self, ifaceobj, ifaceobjcurr, ifaceobj_getfunc):
          """ ifquery-check: attribute: "address" """
@@ -475,7 +477,7 @@ index 55f93fa..bfdc349 100644
  
      def __init__(self, interfacesfile='/etc/network/interfaces',
 diff --git a/ifupdown2/lib/nlcache.py b/ifupdown2/lib/nlcache.py
-index bbd2a8b..8d67cba 100644
+index 891524e..e5a42ef 100644
 --- a/ifupdown2/lib/nlcache.py
 +++ b/ifupdown2/lib/nlcache.py
 @@ -152,7 +152,7 @@ class _NetlinkCache:
@@ -487,7 +489,7 @@ index bbd2a8b..8d67cba 100644
      )
  
      def __init__(self):
-@@ -1179,6 +1179,52 @@ class _NetlinkCache:
+@@ -1217,6 +1217,52 @@ class _NetlinkCache:
          except TypeError as e:
              return self.__handle_type_error(inspect.currentframe().f_code.co_name, ifname, str(e), return_value=0)
  
@@ -540,7 +542,7 @@ index bbd2a8b..8d67cba 100644
      #####################################################
      #####################################################
      #####################################################
-@@ -1745,6 +1791,21 @@ class _NetlinkCache:
+@@ -1833,6 +1879,21 @@ class _NetlinkCache:
          except (KeyError, AttributeError):
              return addresses
  
@@ -590,7 +592,7 @@ index 262d726..ca461ea 100644
          source /etc/network/interfaces.d/*
  
 diff --git a/ifupdown2/nlmanager/nlpacket.py b/ifupdown2/nlmanager/nlpacket.py
-index ed463c2..4d6a4c4 100644
+index efc4c4e..95d59dc 100644
 --- a/ifupdown2/nlmanager/nlpacket.py
 +++ b/ifupdown2/nlmanager/nlpacket.py
 @@ -1818,6 +1818,15 @@ class AttributeIFLA_AF_SPEC(Attribute):
@@ -632,3 +634,6 @@ index ed463c2..4d6a4c4 100644
                              inet6_attr[inet6_attr_type] = self.decode_one_byte_attribute(sub_attr_data)
  
                              # nlmanager doesn't support multiple kernel version
+-- 
+2.49.0
+

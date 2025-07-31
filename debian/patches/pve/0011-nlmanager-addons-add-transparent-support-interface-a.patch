@@ -1,4 +1,4 @@
-From acab81c40482f2c3cdff25c599fe690fc466b0be Mon Sep 17 00:00:00 2001
+From ca818a46bc5519adde981df317ac635e064eae45 Mon Sep 17 00:00:00 2001
 From: Christoph Heiss <c.heiss@proxmox.com>
 Date: Fri, 11 Jul 2025 17:45:47 +0200
 Subject: [PATCH] nlmanager, addons: add transparent support interface altnames
@@ -18,6 +18,7 @@ name(s) and add the appropriate translation there too.
 
 Signed-off-by: Christoph Heiss <c.heiss@proxmox.com>
 ---
+ ifupdown2/addons/address.py          |  27 +++----
  ifupdown2/addons/bond.py             |   9 ++-
  ifupdown2/addons/bridge.py           |  14 ----
  ifupdown2/addons/openvswitch.py      |   1 +
@@ -28,8 +29,110 @@ Signed-off-by: Christoph Heiss <c.heiss@proxmox.com>
  ifupdown2/lib/nlcache.py             | 102 +++++++++++++++++++++++++++
  ifupdown2/nlmanager/nlmanager.py     |  15 ++++
  ifupdown2/nlmanager/nlpacket.py      |  63 +++++++++++++++++
- 10 files changed, 246 insertions(+), 36 deletions(-)
+ 11 files changed, 260 insertions(+), 49 deletions(-)
 
+diff --git a/ifupdown2/addons/address.py b/ifupdown2/addons/address.py
+index 20f8866..c19b138 100644
+--- a/ifupdown2/addons/address.py
++++ b/ifupdown2/addons/address.py
+@@ -912,6 +912,7 @@ class address(AddonWithIpBlackList, moduleBase):
+         self.write_file("/proc/sys/net/%s/conf/%s/forwarding" % (family, ifname), "%s\n" % value)
+ 
+     def _sysctl_config(self, ifaceobj):
++        ifacename = self.cache.link_translate_altname(ifaceobj.name)
+         setting_default_value = False
+         mpls_enable = ifaceobj.get_attr_value_first('mpls-enable');
+         if not mpls_enable:
+@@ -923,17 +924,17 @@ class address(AddonWithIpBlackList, moduleBase):
+         if ifupdownflags.flags.PERFMODE:
+             running_mpls_enable = '0'
+         else:
+-            running_mpls_enable = str(self.cache.get_netconf_mpls_input(ifaceobj.name))
++            running_mpls_enable = str(self.cache.get_netconf_mpls_input(ifacename))
+ 
+         if mpls_enable != running_mpls_enable:
+             try:
+                 self.sysctl_set('net.mpls.conf.%s.input'
+-                                %('/'.join(ifaceobj.name.split("."))),
++                                %('/'.join(ifacename.split("."))),
+                                 mpls_enable)
+             except Exception as e:
+                 if not setting_default_value:
+                     ifaceobj.status = ifaceStatus.ERROR
+-                    self.logger.error('%s: %s' %(ifaceobj.name, str(e)))
++                    self.logger.error('%s: %s' %(ifacename, str(e)))
+ 
+         if (ifaceobj.link_kind & ifaceLinkKind.BRIDGE):
+             self._set_bridge_forwarding(ifaceobj)
+@@ -948,21 +949,21 @@ class address(AddonWithIpBlackList, moduleBase):
+         if ifupdownflags.flags.PERFMODE:
+             if ipforward:
+                 self.sysctl_set('net.ipv4.conf.%s.forwarding'
+-                                 %('/'.join(ifaceobj.name.split("."))),
++                                 %('/'.join(ifacename.split("."))),
+                                 utils.boolean_support_binary(ipforward))
+             if ip6forward:
+                 self.sysctl_set('net.ipv6.conf.%s.forwarding'
+-                                %('/'.join(ifaceobj.name.split("."))),
++                                %('/'.join(ifacename.split("."))),
+                                 utils.boolean_support_binary(ip6forward))
+             return
+         bridge_port = ifaceobj.link_privflags & ifaceLinkPrivFlags.BRIDGE_PORT
+         if bridge_port:
+             if ipforward:
+                 self.log_error('%s: \'ip-forward\' is not supported for '
+-                               'bridge port' %ifaceobj.name)
++                               'bridge port' %ifacename)
+             if ip6forward:
+                 self.log_error('%s: \'ip6-forward\' is not supported for '
+-                               'bridge port' %ifaceobj.name)
++                               'bridge port' %ifacename)
+             return
+         setting_default_value = False
+         if not ipforward:
+@@ -970,16 +971,16 @@ class address(AddonWithIpBlackList, moduleBase):
+             ipforward = self.ipforward
+         if ipforward:
+             ipforward = int(utils.get_boolean_from_string(ipforward))
+-            running_ipforward = self.cache.get_netconf_forwarding(socket.AF_INET, ifaceobj.name)
++            running_ipforward = self.cache.get_netconf_forwarding(socket.AF_INET, ifacename)
+             if ipforward != running_ipforward:
+                 try:
+                     self.sysctl_set('net.ipv4.conf.%s.forwarding'
+-                                    %('/'.join(ifaceobj.name.split("."))),
++                                    %('/'.join(ifacename.split("."))),
+                                     ipforward)
+                 except Exception as e:
+                     if not setting_default_value:
+                         ifaceobj.status = ifaceStatus.ERROR
+-                        self.logger.error('%s: %s' %(ifaceobj.name, str(e)))
++                        self.logger.error('%s: %s' %(ifacename, str(e)))
+ 
+         setting_default_value = False
+ 
+@@ -989,11 +990,11 @@ class address(AddonWithIpBlackList, moduleBase):
+ 
+         if ip6forward:
+             ip6forward = int(utils.get_boolean_from_string(ip6forward))
+-            running_ip6forward = self.cache.get_netconf_forwarding(socket.AF_INET6, ifaceobj.name)
++            running_ip6forward = self.cache.get_netconf_forwarding(socket.AF_INET6, ifacename)
+             if ip6forward != running_ip6forward:
+                 try:
+                     self.sysctl_set('net.ipv6.conf.%s.forwarding'
+-                                    %('/'.join(ifaceobj.name.split("."))),
++                                    %('/'.join(ifacename.split("."))),
+                                     ip6forward)
+                 except Exception as e:
+                     # There is chance of ipv6 being removed because of,
+@@ -1002,7 +1003,7 @@ class address(AddonWithIpBlackList, moduleBase):
+                     # ip6-forward
+                     if not setting_default_value:
+                        ifaceobj.status = ifaceStatus.ERROR
+-                       self.logger.error('%s: %s' %(ifaceobj.name, str(e)))
++                       self.logger.error('%s: %s' %(ifacename, str(e)))
+ 
+     def process_mtu(self, ifaceobj, ifaceobj_getfunc):
+ 
 diff --git a/ifupdown2/addons/bond.py b/ifupdown2/addons/bond.py
 index 2af5cf6..d5a7f3d 100644
 --- a/ifupdown2/addons/bond.py
