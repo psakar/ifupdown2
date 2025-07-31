@@ -1,4 +1,4 @@
-From 594825e710bd9b33b19ba2b0f20f76076b638cc0 Mon Sep 17 00:00:00 2001
+From acab81c40482f2c3cdff25c599fe690fc466b0be Mon Sep 17 00:00:00 2001
 From: Christoph Heiss <c.heiss@proxmox.com>
 Date: Fri, 11 Jul 2025 17:45:47 +0200
 Subject: [PATCH] nlmanager, addons: add transparent support interface altnames
@@ -18,7 +18,7 @@ name(s) and add the appropriate translation there too.
 
 Signed-off-by: Christoph Heiss <c.heiss@proxmox.com>
 ---
- ifupdown2/addons/bond.py             |   3 +-
+ ifupdown2/addons/bond.py             |   9 ++-
  ifupdown2/addons/bridge.py           |  14 ----
  ifupdown2/addons/openvswitch.py      |   1 +
  ifupdown2/addons/openvswitch_port.py |  31 +++++---
@@ -28,10 +28,10 @@ Signed-off-by: Christoph Heiss <c.heiss@proxmox.com>
  ifupdown2/lib/nlcache.py             | 102 +++++++++++++++++++++++++++
  ifupdown2/nlmanager/nlmanager.py     |  15 ++++
  ifupdown2/nlmanager/nlpacket.py      |  63 +++++++++++++++++
- 10 files changed, 240 insertions(+), 36 deletions(-)
+ 10 files changed, 246 insertions(+), 36 deletions(-)
 
 diff --git a/ifupdown2/addons/bond.py b/ifupdown2/addons/bond.py
-index 2af5cf6..ef6d37a 100644
+index 2af5cf6..d5a7f3d 100644
 --- a/ifupdown2/addons/bond.py
 +++ b/ifupdown2/addons/bond.py
 @@ -277,6 +277,7 @@ class bond(Addon, moduleBase):
@@ -42,28 +42,24 @@ index 2af5cf6..ef6d37a 100644
          self._bond_attr_ifquery_check_translate_func[Link.IFLA_BOND_PRIMARY] = self.cache.get_ifindex
          self._bond_attr_set_list = self._bond_attr_set_list + (('bond-primary', Link.IFLA_BOND_PRIMARY, self.cache.get_ifindex),)
  
-@@ -292,7 +293,7 @@ class bond(Addon, moduleBase):
+@@ -291,8 +292,14 @@ class bond(Addon, moduleBase):
+         self.speed_pattern = re.compile(r"Speed: (\d+)")
  
      def get_bond_slaves(self, ifaceobj):
++        slaves = []
++
          # bond-ports aliases should be translated to bond-slaves
 -        return ifaceobj.get_attr_value_first('bond-slaves')
-+        return self.cache.link_translate_altname(ifaceobj.get_attr_value_first('bond-slaves'))
++        raw_ports = ifaceobj.get_attr_value_first('bond-slaves')
++        if raw_ports:
++            slaves = raw_ports.split()
++
++        return ' '.join(self.cache.link_translate_altnames(slaves))
  
      def _is_bond(self, ifaceobj):
          # at first link_kind is not set but once ifupdownmain
-@@ -301,6 +302,10 @@
-                or ifaceobj.get_attr_value_first("bond-mode") \
-                or self.get_bond_slaves(ifaceobj)
- 
-+    def parse_port_list(self, ifacename, port_expr, ifacenames=None):
-+        port_list = super().parse_port_list(ifacename, port_expr, ifacenames)
-+        return self.cache.link_translate_altnames(port_list)
-+
-     def get_dependent_ifacenames(self, ifaceobj, ifacenames_all=None, old_ifaceobjs=False):
-         """ Returns list of interfaces dependent on ifaceobj """
- 
 diff --git a/ifupdown2/addons/bridge.py b/ifupdown2/addons/bridge.py
-index 87bcda9..1da8de7 100644
+index e0e7375..0215309 100644
 --- a/ifupdown2/addons/bridge.py
 +++ b/ifupdown2/addons/bridge.py
 @@ -1134,20 +1134,6 @@ class bridge(Bridge, moduleBase):
@@ -223,7 +219,7 @@ index 4380dd8..a53b2f9 100644
  
              #
 diff --git a/ifupdown2/ifupdown/ifupdownmain.py b/ifupdown2/ifupdown/ifupdownmain.py
-index 1b034d1..97a83f7 100644
+index 92e3393..904062d 100644
 --- a/ifupdown2/ifupdown/ifupdownmain.py
 +++ b/ifupdown2/ifupdown/ifupdownmain.py
 @@ -228,7 +228,7 @@ class ifupdownMain:
@@ -343,7 +339,7 @@ index 47e42c7..77056b2 100644
      try:
          ip_blacklist = [ipnetwork.IPNetwork(ip).ip for ip in policymanager.policymanager_api.get_module_globals(
 diff --git a/ifupdown2/lib/nlcache.py b/ifupdown2/lib/nlcache.py
-index 8d67cba..e5a42ef 100644
+index bbd2a8b..891524e 100644
 --- a/ifupdown2/lib/nlcache.py
 +++ b/ifupdown2/lib/nlcache.py
 @@ -804,6 +804,44 @@ class _NetlinkCache:
@@ -391,7 +387,7 @@ index 8d67cba..e5a42ef 100644
      ################
      # MASTER & SLAVE
      ################
-@@ -1265,6 +1303,13 @@ class _NetlinkCache:
+@@ -1219,6 +1257,13 @@ class _NetlinkCache:
          # dictionaries if the master has changed or was un-enslaved.
          old_ifla_master = None
  
@@ -405,7 +401,7 @@ index 8d67cba..e5a42ef 100644
          with self._cache_lock:
  
              # do we have a wait event registered for RTM_NEWLINK this ifname
-@@ -1288,6 +1333,14 @@ class _NetlinkCache:
+@@ -1242,6 +1287,14 @@ class _NetlinkCache:
  
              self._link_cache[ifname] = link
  
@@ -420,7 +416,7 @@ index 8d67cba..e5a42ef 100644
              ######################################################
              # update helper dictionaries and handle link renamed #
              ######################################################
-@@ -1299,6 +1352,9 @@ class _NetlinkCache:
+@@ -1253,6 +1306,9 @@ class _NetlinkCache:
                  # in get_ifname/get_ifindex/get_master to do the work.
  
                  self._ifindex_by_ifname[ifname] = ifindex
@@ -430,7 +426,7 @@ index 8d67cba..e5a42ef 100644
  
                  rename_detected                 = False
                  old_ifname_entry_for_ifindex    = self._ifname_by_ifindex.get(ifindex)
-@@ -1309,6 +1365,7 @@ class _NetlinkCache:
+@@ -1263,6 +1319,7 @@ class _NetlinkCache:
                      # renamed. We need to update the cache accordingly.
                      rename_detected = True
  
@@ -438,7 +434,7 @@ index 8d67cba..e5a42ef 100644
                  self._ifname_by_ifindex[ifindex] = ifname
  
                  if rename_detected:
-@@ -1547,9 +1604,17 @@ class _NetlinkCache:
+@@ -1501,9 +1558,17 @@ class _NetlinkCache:
                      self._ignore_rtm_newlinkq.remove(ifname)
              except ValueError:
                  pass
@@ -456,7 +452,7 @@ index 8d67cba..e5a42ef 100644
  
          link_ifla_master = None
          # when an enslaved device is removed we receive the RTM_DELLINK
-@@ -1578,6 +1643,17 @@ class _NetlinkCache:
+@@ -1532,6 +1597,17 @@ class _NetlinkCache:
                  # KeyError means that the link doesn't exists in the cache
                  log.debug('del _link_cache: KeyError ifname: %s' % ifname)
  
@@ -474,7 +470,7 @@ index 8d67cba..e5a42ef 100644
              try:
                  # like in __unslave_nolock() we need to make sure that all deleted link
                  # have their bridge-vlans and _slaves_master entries cleared.
-@@ -1606,6 +1682,12 @@ class _NetlinkCache:
+@@ -1560,6 +1636,12 @@ class _NetlinkCache:
              except KeyError:
                  log.debug('del _ifindex_by_ifname: KeyError ifname: %s' % ifname)
  
@@ -487,7 +483,7 @@ index 8d67cba..e5a42ef 100644
              try:
                  del self._addr_cache[ifname]
              except KeyError:
-@@ -1627,6 +1709,12 @@ class _NetlinkCache:
+@@ -1581,6 +1663,12 @@ class _NetlinkCache:
                      log.debug('_masters_and_slaves[if%s].remove(%s): KeyError' % (link_ifla_master, ifname))
  
      def _address_get_ifname_and_ifindex(self, addr):
@@ -500,7 +496,7 @@ index 8d67cba..e5a42ef 100644
          ifindex = addr.ifindex
          label = addr.get_attribute_value(Address.IFA_LABEL)
  
-@@ -3200,6 +3288,20 @@ class NetlinkListenerWithCache(nllistener.NetlinkManagerWithListener, BaseObject
+@@ -3139,6 +3227,20 @@ class NetlinkListenerWithCache(nllistener.NetlinkManagerWithListener, BaseObject
          self.log_info_ifname_dry_run(ifname, "netlink: ip link set dev %s: bridge port attributes" % ifname)
          self.logger.debug("attributes: %s" % ifla_info_slave_data)
  
@@ -548,10 +544,10 @@ index 5e0cd8e..d57ddcf 100644
          debug = RTM_GETLINK in self.debug
          msg = Link(RTM_GETLINK, debug, use_color=self.use_color)
 diff --git a/ifupdown2/nlmanager/nlpacket.py b/ifupdown2/nlmanager/nlpacket.py
-index 4d6a4c4..95d59dc 100644
+index ed463c2..efc4c4e 100644
 --- a/ifupdown2/nlmanager/nlpacket.py
 +++ b/ifupdown2/nlmanager/nlpacket.py
-@@ -3486,6 +3486,49 @@ class AttributeIFLA_PROTINFO(Attribute):
+@@ -3464,6 +3464,49 @@ class AttributeIFLA_PROTINFO(Attribute):
          return value_pretty
  
  
@@ -601,7 +597,7 @@ index 4d6a4c4..95d59dc 100644
  
  class NetlinkPacket(object):
      """
-@@ -4185,6 +4228,16 @@ class Link(NetlinkPacket, NetlinkPacket_IFLA_LINKINFO_Attributes):
+@@ -4163,6 +4206,16 @@ class Link(NetlinkPacket, NetlinkPacket_IFLA_LINKINFO_Attributes):
      IFLA_NEW_IFINDEX        = 49
      IFLA_MIN_MTU            = 50
      IFLA_MAX_MTU            = 51
@@ -618,7 +614,7 @@ index 4d6a4c4..95d59dc 100644
  
      attribute_to_class = {
          IFLA_UNSPEC          : ('IFLA_UNSPEC', AttributeGeneric),
-@@ -4239,6 +4292,16 @@ class Link(NetlinkPacket, NetlinkPacket_IFLA_LINKINFO_Attributes):
+@@ -4217,6 +4270,16 @@ class Link(NetlinkPacket, NetlinkPacket_IFLA_LINKINFO_Attributes):
          IFLA_NEW_IFINDEX        : ('IFLA_NEW_IFINDEX', AttributeFourByteValue),
          IFLA_MIN_MTU            : ('IFLA_MIN_MTU', AttributeFourByteValue),
          IFLA_MAX_MTU            : ('IFLA_MAX_MTU', AttributeFourByteValue),
