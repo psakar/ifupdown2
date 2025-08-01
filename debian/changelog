@@ -1,3 +1,11 @@
+ifupdown2 (3.3.0-1+pmx9) trixie; urgency=medium
+
+  * translate bond-slaves altnames directly on attribute read.
+
+  * translate altnames before accessing sysctls in address module.
+
+ -- Proxmox Support Team <support@proxmox.com>  Fri, 01 Aug 2025 09:03:28 +0200
+
 ifupdown2 (3.3.0-1+pmx8) trixie; urgency=medium
 
   * transparent altname support: fix issue when reloading bonds with altname
