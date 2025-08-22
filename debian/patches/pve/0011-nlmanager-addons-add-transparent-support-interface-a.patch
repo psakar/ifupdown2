@@ -1,4 +1,4 @@
-From ca818a46bc5519adde981df317ac635e064eae45 Mon Sep 17 00:00:00 2001
+From f1084be759217d35a624664de23fecf8ec0c7f44 Mon Sep 17 00:00:00 2001
 From: Christoph Heiss <c.heiss@proxmox.com>
 Date: Fri, 11 Jul 2025 17:45:47 +0200
 Subject: [PATCH] nlmanager, addons: add transparent support interface altnames
@@ -18,21 +18,27 @@ name(s) and add the appropriate translation there too.
 
 Signed-off-by: Christoph Heiss <c.heiss@proxmox.com>
 ---
- ifupdown2/addons/address.py          |  27 +++----
- ifupdown2/addons/bond.py             |   9 ++-
+ ifupdown2/addons/address.py          |  31 ++++----
+ ifupdown2/addons/addressvirtual.py   |  18 +++--
+ ifupdown2/addons/bond.py             |  25 +++++--
  ifupdown2/addons/bridge.py           |  14 ----
+ ifupdown2/addons/bridgevlan.py       |   5 ++
+ ifupdown2/addons/mstpctl.py          |   9 ++-
  ifupdown2/addons/openvswitch.py      |   1 +
  ifupdown2/addons/openvswitch_port.py |  31 +++++---
  ifupdown2/addons/vlan.py             |  15 +++-
+ ifupdown2/addons/vrf.py              |   4 ++
+ ifupdown2/addons/vxlan.py            |   3 +-
  ifupdown2/ifupdown/ifupdownmain.py   |  23 ++++--
  ifupdown2/lib/addon.py               |   9 +--
+ ifupdown2/lib/iproute2.py            |   2 +
  ifupdown2/lib/nlcache.py             | 102 +++++++++++++++++++++++++++
  ifupdown2/nlmanager/nlmanager.py     |  15 ++++
  ifupdown2/nlmanager/nlpacket.py      |  63 +++++++++++++++++
- 11 files changed, 260 insertions(+), 49 deletions(-)
+ 17 files changed, 304 insertions(+), 66 deletions(-)
 
 diff --git a/ifupdown2/addons/address.py b/ifupdown2/addons/address.py
-index 20f8866..c19b138 100644
+index 20f8866..d158c44 100644
 --- a/ifupdown2/addons/address.py
 +++ b/ifupdown2/addons/address.py
 @@ -912,6 +912,7 @@ class address(AddonWithIpBlackList, moduleBase):
@@ -133,8 +139,83 @@ index 20f8866..c19b138 100644
  
      def process_mtu(self, ifaceobj, ifaceobj_getfunc):
  
+@@ -1067,7 +1068,9 @@ class address(AddonWithIpBlackList, moduleBase):
+ 
+     def disable_ipv6(self, ifaceobj):
+         user_config = ifaceobj.get_attr_value_first("disable-ipv6")
+-        sysfs_path = f"/proc/sys/net/ipv6/conf/{ifaceobj.name}/disable_ipv6"
++
++        ifacename = self.cache.link_translate_altname(ifaceobj.name)
++        sysfs_path = f"/proc/sys/net/ipv6/conf/{ifacename}/disable_ipv6"
+ 
+         if not user_config:
+             # check if disable-ipv6 was removed from the stanza
+diff --git a/ifupdown2/addons/addressvirtual.py b/ifupdown2/addons/addressvirtual.py
+index d52115e..587f39f 100644
+--- a/ifupdown2/addons/addressvirtual.py
++++ b/ifupdown2/addons/addressvirtual.py
+@@ -347,6 +347,10 @@ class addressvirtual(AddonWithIpBlackList, moduleBase):
+         interfaces are brought up, the expectation is that
+         the normal path will fix up a vrf device or its slaves"""
+ 
++        # anything calling into self.sysfs must use the translated name to
++        # properly handle altnames
++        ifacename = self.cache.link_translate_altname(ifaceobj.name)
++
+         if not ifaceobj_getfunc:
+             return
+         if ((ifaceobj.link_kind & ifaceLinkKind.VRF) and
+@@ -355,7 +359,7 @@ class addressvirtual(AddonWithIpBlackList, moduleBase):
+             # that have address virtual config,
+             # enslave the slaves 'address virtual
+             # interfaces (macvlans)' to myself:
+-            running_slaves = self.sysfs.link_get_lowers(ifaceobj.name)
++            running_slaves = self.sysfs.link_get_lowers(ifacename)
+             if running_slaves:
+                 # pick up any existing slaves of a vrf device and
+                 # look for their upperdevices and enslave them to the
+@@ -364,8 +368,10 @@ class addressvirtual(AddonWithIpBlackList, moduleBase):
+                     sobjs = ifaceobj_getfunc(s)
+                     if (sobjs and
+                         (sobjs[0].link_privflags & ifaceLinkPrivFlags.ADDRESS_VIRTUAL_SLAVE)):
+-                        # enslave all its upper devices to
+-                        # the vrf device
++                        # enslave all its upper devices to the vrf device
++                        #
++                        # names retrieved from sysfs will be primary interface names,
++                        # so no need to translate here
+                         upperdevs = self.sysfs.link_get_uppers(sobjs[0].name)
+                         if not upperdevs:
+                             continue
+@@ -373,7 +379,7 @@ class addressvirtual(AddonWithIpBlackList, moduleBase):
+                             # skip vrf device which
+                             # will also show up in the
+                             # upper device list
+-                            if u == ifaceobj.name:
++                            if u == ifacename:
+                                 continue
+                             self.netlink.link_set_master(u, ifaceobj.name)
+                             self.netlink.link_up(u)
+@@ -386,7 +392,7 @@ class addressvirtual(AddonWithIpBlackList, moduleBase):
+             vrfname = ifaceobj.get_attr_value_first('vrf')
+             if not vrfname or not self.cache.link_exists(vrfname):
+                 return
+-            running_uppers = self.sysfs.link_get_uppers(ifaceobj.name)
++            running_uppers = self.sysfs.link_get_uppers(ifacename)
+             if not running_uppers:
+                 return
+             macvlan_prefix = self._get_macvlan_prefix(ifaceobj)
+@@ -426,7 +432,7 @@ class addressvirtual(AddonWithIpBlackList, moduleBase):
+ 
+         user_configured_ipv6_addrgenmode, ipv6_addrgen_user_value = self.get_addressvirtual_ipv6_addrgen_user_conf(ifaceobj)
+         purge_existing = False if ifupdownflags.flags.PERFMODE else True
+-        ifname = ifaceobj.name
++        ifname = self.cache.link_translate_altname(ifaceobj.name)
+ 
+         update_mtu = lower_iface_mtu = lower_iface_mtu_str = None
+         if ifupdownconfig.config.get("adjust_logical_dev_mtu", "1") != "0" and ifaceobj.lowerifaces and intf_config_list:
 diff --git a/ifupdown2/addons/bond.py b/ifupdown2/addons/bond.py
-index 2af5cf6..d5a7f3d 100644
+index 2af5cf6..4d178b8 100644
 --- a/ifupdown2/addons/bond.py
 +++ b/ifupdown2/addons/bond.py
 @@ -277,6 +277,7 @@ class bond(Addon, moduleBase):
@@ -161,6 +242,38 @@ index 2af5cf6..d5a7f3d 100644
  
      def _is_bond(self, ifaceobj):
          # at first link_kind is not set but once ifupdownmain
+@@ -497,7 +504,7 @@ class bond(Addon, moduleBase):
+                     self.iproute2.link_set_protodown_reason_clag_off(s)
+                     self.netlink.link_set_protodown_off(s)
+                 if s not in slaves:
+-                    self.sysfs.bond_remove_slave(ifaceobj.name, s)
++                    self.sysfs.bond_remove_slave(self.cache.link_translate_altname(ifaceobj.name), s)
+                     removed_slave.append(s)
+                     if clag_bond:
+                         try:
+@@ -876,13 +883,17 @@ class bond(Addon, moduleBase):
+         return link_exists, bond_slaves
+ 
+     def create_or_set_bond_config_sysfs(self, ifaceobj, ifla_info_data):
+-        if len(ifaceobj.name) > 15:
+-            self.log_error("%s: cannot create bond: interface name exceeds max length of 15" % ifaceobj.name, ifaceobj)
++        # anything calling into self.sysfs must use the translated name to
++        # properly handle altnames
++        ifacename = self.cache.link_translate_altname(ifaceobj.name)
++
++        if len(ifacename) > 15:
++            self.log_error("%s: cannot create bond: interface name exceeds max length of 15" % ifacename, ifaceobj)
+             return
+ 
+-        if not self.cache.link_exists(ifaceobj.name):
+-            self.sysfs.bond_create(ifaceobj.name)
+-        self.sysfs.bond_set_attrs_nl(ifaceobj.name, ifla_info_data)
++        if not self.cache.link_exists(ifacename):
++            self.sysfs.bond_create(ifacename)
++        self.sysfs.bond_set_attrs_nl(ifacename, ifla_info_data)
+ 
+     def _up(self, ifaceobj, ifaceobj_getfunc=None):
+         try:
 diff --git a/ifupdown2/addons/bridge.py b/ifupdown2/addons/bridge.py
 index e0e7375..0215309 100644
 --- a/ifupdown2/addons/bridge.py
@@ -186,6 +299,69 @@ index e0e7375..0215309 100644
      def _get_bridge_port_list_user_ordered(self, ifaceobj):
          # When enslaving bridge-ports we need to return the exact user
          # configured bridge ports list (bridge will inherit the mac of the
+diff --git a/ifupdown2/addons/bridgevlan.py b/ifupdown2/addons/bridgevlan.py
+index 6b75dc3..76bbfec 100644
+--- a/ifupdown2/addons/bridgevlan.py
++++ b/ifupdown2/addons/bridgevlan.py
+@@ -77,6 +77,9 @@ class bridgevlan(Addon, moduleBase):
+                            "to format (eg. br0.100)" % ifaceobj.name, ifaceobj)
+             raise
+ 
++        # used below with sysfs
++        bridgename = self.cache.link_translate_altname(bridgename)
++
+         if not self.cache.link_exists(bridgename):
+             #self.logger.warning('%s: bridge %s does not exist' %(ifaceobj.name,
+             #                 bridgename))
+@@ -120,6 +123,8 @@ class bridgevlan(Addon, moduleBase):
+ 
+     def _query_running_bridge_igmp_querier_src(self, ifaceobj):
+         (bridgename, vlanid) = ifaceobj.name.split('.')
++
++        bridgename = self.cache.link_translate_altname(bridgename)
+         running_mcqv4src = self.sysfs.bridge_get_mcqv4src(bridgename)
+         if running_mcqv4src:
+             return running_mcqv4src.get(vlanid)
+diff --git a/ifupdown2/addons/mstpctl.py b/ifupdown2/addons/mstpctl.py
+index ff44eab..3eddf36 100644
+--- a/ifupdown2/addons/mstpctl.py
++++ b/ifupdown2/addons/mstpctl.py
+@@ -376,6 +376,7 @@ class mstpctl(Addon, moduleBase):
+ 
+     def _ports_enable_disable_ipv6(self, ports, enable='1'):
+         for p in ports:
++            p = self.cache.link_translate_altname(p)
+             try:
+                 self.write_file('/proc/sys/net/ipv6/conf/%s' %p +
+                                 '/disable_ipv6', enable)
+@@ -924,7 +925,7 @@ class mstpctl(Addon, moduleBase):
+                 # contain more than one valid values
+                 stp_on_vals = ['on', 'yes']
+                 stp_off_vals = ['off']
+-                rv = self.sysfs.bridge_get_stp(ifaceobj.name)
++                rv = self.sysfs.bridge_get_stp(self.cache.link_translate_altname(ifaceobj.name))
+                 if ((v in stp_on_vals and rv in stp_on_vals) or
+                     (v in stp_off_vals and rv in stp_off_vals)):
+                     ifaceobjcurr.update_config_with_status('mstpctl-stp', v, 0)
+@@ -1151,14 +1152,16 @@ class mstpctl(Addon, moduleBase):
+         #    portconfig['mstpctl-treeportcost'] += ' %s=%s' %(p, v)
+ 
+     def _query_running_bridge(self, ifaceobjrunning):
+-        if self.sysfs.bridge_get_stp(ifaceobjrunning.name) == 'no':
++        bridgename = self.cache.get_master(ifaceobjrunning.name)
++
++        if self.sysfs.bridge_get_stp(bridgename) == 'no':
+            # This bridge does not run stp, return
+            return
+         # if userspace stp not set, return
+         if self.systcl_get_net_bridge_stp_user_space() != '1':
+             return
+         # Check if mstp really knows about this bridge
+-        if not self.mstpctlcmd.mstpbridge_exists(ifaceobjrunning.name):
++        if not self.mstpctlcmd.mstpbridge_exists(bridgename):
+             return
+         bridge_vlan_aware = False
+         if ifaceobjrunning.get_attr_value_first('bridge-vlan-aware') == 'yes':
 diff --git a/ifupdown2/addons/openvswitch.py b/ifupdown2/addons/openvswitch.py
 index 40fc36a..24483aa 100644
 --- a/ifupdown2/addons/openvswitch.py
@@ -321,6 +497,49 @@ index 4380dd8..a53b2f9 100644
              )
  
              #
+diff --git a/ifupdown2/addons/vrf.py b/ifupdown2/addons/vrf.py
+index f0ee503..2c92a12 100644
+--- a/ifupdown2/addons/vrf.py
++++ b/ifupdown2/addons/vrf.py
+@@ -452,6 +452,7 @@ class vrf(Addon, moduleBase):
+         try:
+             for ifaceobj in statemanager.get_ifaceobjs(ifname) or []:
+                 if ifaceobj.link_privflags & ifaceLinkPrivFlags.BRIDGE_PORT:
++                    ifname = self.cache.link_translate_altname(ifname)
+                     self.write_file("/proc/sys/net/ipv6/conf/%s/disable_ipv6" % ifname, "0")
+                     return
+         except Exception as e:
+@@ -481,6 +482,8 @@ class vrf(Addon, moduleBase):
+ 
+     def _up_vrf_slave(self, ifacename, vrfname, ifaceobj=None,
+                       ifaceobj_getfunc=None, vrf_exists=False):
++        ifacename = self.cache.link_translate_altname(ifacename)
++
+         try:
+             master_exists = True
+             if vrf_exists or self.cache.link_exists(vrfname):
+@@ -655,6 +658,7 @@ class vrf(Addon, moduleBase):
+         #  - check if it is also a macvlan device of the
+         #    format <vrf_slave>-v<int> created by the
+         #    address virtual module
++        vrfslave = self.cache.link_translate_altname(vrfslave)
+         vrfslave_lowers = self.sysfs.link_get_lowers(vrfslave)
+         if vrfslave_lowers:
+             if vrfslave_lowers[0] in config_vrfslaves:
+diff --git a/ifupdown2/addons/vxlan.py b/ifupdown2/addons/vxlan.py
+index cc8d3b3..2a4857d 100644
+--- a/ifupdown2/addons/vxlan.py
++++ b/ifupdown2/addons/vxlan.py
+@@ -965,7 +965,8 @@ class vxlan(Vxlan, moduleBase):
+                 vxlan_physdev_ifindex = self.cache.get_ifindex(vxlan_physdev)
+             except NetlinkCacheIfnameNotFoundError:
+                 try:
+-                    vxlan_physdev_ifindex = int(self.sysfs.read_file_oneline("/sys/class/net/%s/ifindex" % vxlan_physdev))
++                    ifname = self.cache.link_translate_altname(vxlan_physdev) or vxlan_physdev
++                    vxlan_physdev_ifindex = int(self.sysfs.read_file_oneline("/sys/class/net/%s/ifindex" % ifname))
+                 except Exception:
+                     self.logger.error("%s: physdev %s doesn't exists" % (ifaceobj.name, vxlan_physdev))
+                     return
 diff --git a/ifupdown2/ifupdown/ifupdownmain.py b/ifupdown2/ifupdown/ifupdownmain.py
 index 92e3393..904062d 100644
 --- a/ifupdown2/ifupdown/ifupdownmain.py
@@ -441,6 +660,19 @@ index 47e42c7..77056b2 100644
  class AddonWithIpBlackList(Addon):
      try:
          ip_blacklist = [ipnetwork.IPNetwork(ip).ip for ip in policymanager.policymanager_api.get_module_globals(
+diff --git a/ifupdown2/lib/iproute2.py b/ifupdown2/lib/iproute2.py
+index 543082e..e22b34c 100644
+--- a/ifupdown2/lib/iproute2.py
++++ b/ifupdown2/lib/iproute2.py
+@@ -505,6 +505,8 @@ class IPRoute2(Cache, Requirements):
+         :param link_created:
+         :return:
+         """
++        ifname = self.cache.link_translate_altname(ifname)
++
+         cached_ipv6_addr_gen_mode = self.cache.get_link_ipv6_addrgen_mode(ifname)
+ 
+         if cached_ipv6_addr_gen_mode == addrgen:
 diff --git a/ifupdown2/lib/nlcache.py b/ifupdown2/lib/nlcache.py
 index bbd2a8b..891524e 100644
 --- a/ifupdown2/lib/nlcache.py
@@ -735,5 +967,5 @@ index ed463c2..efc4c4e 100644
  
      # Link flags
 -- 
-2.49.0
+2.50.1
 
