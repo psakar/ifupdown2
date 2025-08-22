@@ -1,0 +1,102 @@
+From 04874163c94a638361dd811e5c5a3f4060b45e21 Mon Sep 17 00:00:00 2001
+From: Christoph Heiss <c.heiss@proxmox.com>
+Date: Fri, 22 Aug 2025 11:59:21 +0200
+Subject: [PATCH] nlmanager: read ipv6 devconf `disable_ipv6` attribute through
+ netlink
+
+Instead of using sysfs, read it directly from netlink, making it more
+robust and enabling caching of the value.
+
+Signed-off-by: Christoph Heiss <c.heiss@proxmox.com>
+---
+ ifupdown2/addons/address.py     |  3 +--
+ ifupdown2/lib/iproute2.py       |  2 +-
+ ifupdown2/lib/nlcache.py        | 10 ++++++++++
+ ifupdown2/lib/sysfs.py          |  8 --------
+ ifupdown2/nlmanager/nlpacket.py |  1 +
+ 5 files changed, 13 insertions(+), 11 deletions(-)
+
+diff --git a/ifupdown2/addons/address.py b/ifupdown2/addons/address.py
+index 377b419..46226a9 100644
+--- a/ifupdown2/addons/address.py
++++ b/ifupdown2/addons/address.py
+@@ -1517,12 +1517,11 @@ class address(AddonWithIpBlackList, moduleBase):
+             return
+ 
+         user_config_bool = utils.get_boolean_from_string(user_config)
+-        sysfs_path = f"/proc/sys/net/ipv6/conf/{ifaceobj.name}/disable_ipv6"
+ 
+         ifaceobjcurr.update_config_with_status(
+             "disable-ipv6",
+             user_config,
+-            user_config_bool != utils.get_boolean_from_string(self.sysfs.read_file_oneline(sysfs_path))
++            user_config_bool != self.cache.get_link_inet6_disable(ifaceobj.name),
+         )
+ 
+     def _query_check(self, ifaceobj, ifaceobjcurr, ifaceobj_getfunc=None):
+diff --git a/ifupdown2/lib/iproute2.py b/ifupdown2/lib/iproute2.py
+index 3760963..8192d93 100644
+--- a/ifupdown2/lib/iproute2.py
++++ b/ifupdown2/lib/iproute2.py
+@@ -512,7 +512,7 @@ class IPRoute2(Cache, Requirements):
+         if cached_ipv6_addr_gen_mode == addrgen:
+             return True
+ 
+-        disabled_ipv6 = self.sysfs.get_ipv6_conf_disable_ipv6(ifname)
++        disabled_ipv6 = self.cache.get_link_inet6_disable(ifname)
+ 
+         if disabled_ipv6:
+             self.logger.info("%s: cannot set addrgen: ipv6 is disabled on this device" % ifname)
+diff --git a/ifupdown2/lib/nlcache.py b/ifupdown2/lib/nlcache.py
+index 9c15b6b..855ec43 100644
+--- a/ifupdown2/lib/nlcache.py
++++ b/ifupdown2/lib/nlcache.py
+@@ -1275,6 +1275,16 @@ class _NetlinkCache:
+         except Exception:
+             pass
+ 
++    def get_link_inet6_disable(self, ifname):
++        """
++        Whether IPv6 is disabled on this link or not.
++        :param ifname: str - Interface name
++        :return: boolean
++        """
++        inet6conf = self.get_link_inet6_conf(ifname)
++        if inet6conf and 'disable_ipv6' in inet6conf:
++            return bool(inet6conf['disable_ipv6'])
++        return False
+ 
+     #####################################################
+     #####################################################
+diff --git a/ifupdown2/lib/sysfs.py b/ifupdown2/lib/sysfs.py
+index fb1e405..6aa4284 100644
+--- a/ifupdown2/lib/sysfs.py
++++ b/ifupdown2/lib/sysfs.py
+@@ -201,12 +201,4 @@ class __Sysfs(IO, Requirements):
+             except Exception as e:
+                 self.logger.warning("%s: %s %s: %s" % (bond_name, bond_attr_name, value, str(e)))
+ 
+-    ############################################################################
+-    # /proc/sys/ipv6/conf
+-    ############################################################################
+-
+-    def get_ipv6_conf_disable_ipv6(self, ifname):
+-        return int(self.read_file_oneline("/proc/sys/net/ipv6/conf/%s/disable_ipv6" % ifname) or 0)
+-
+-
+ Sysfs = __Sysfs()
+diff --git a/ifupdown2/nlmanager/nlpacket.py b/ifupdown2/nlmanager/nlpacket.py
+index 6a0fef2..c3b0b67 100644
+--- a/ifupdown2/nlmanager/nlpacket.py
++++ b/ifupdown2/nlmanager/nlpacket.py
+@@ -1892,6 +1892,7 @@ class AttributeIFLA_AF_SPEC(Attribute):
+             self.IPV6_DEVCONF_ACCEPT_RA: 'accept_ra',
+             self.IPV6_DEVCONF_ACCEPT_REDIRECTS: 'accept_redirects',
+             self.IPV6_DEVCONF_AUTOCONF: 'autoconf',
++            self.IPV6_DEVCONF_DISABLE_IPV6: 'disable_ipv6',
+         }
+ 
+         self.decode_length_type(data)
+-- 
+2.50.1
+
