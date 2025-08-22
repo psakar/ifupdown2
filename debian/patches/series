@@ -10,5 +10,6 @@ pve/0009-gvgeb-fix-python-interpreter-shebang.patch
 pve/0010-main-ignore-dpkg-files-when-running-hook-scripts.patch
 pve/0011-nlmanager-addons-add-transparent-support-interface-a.patch
 pve/0012-addons-nlcache-set-interface-mtu-through-netlink-ins.patch
+pve/0013-addons-nlcache-set-interface-alias-through-netlink-i.patch
 upstream/0001-add-ipv6-slaac-support-inet6-auto-accept_ra.patch
 upstream/0001-use-raw-strings-for-regex-to-fix-backslash-interpret.patch

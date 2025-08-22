@@ -1,0 +1,130 @@
+From 5451c4052a350ee941af4f8237a16334240a3a45 Mon Sep 17 00:00:00 2001
+From: Christoph Heiss <c.heiss@proxmox.com>
+Date: Wed, 20 Aug 2025 14:03:30 +0200
+Subject: [PATCH] addons, nlcache: set interface alias through netlink instead
+ of sysfs
+
+Signed-off-by: Christoph Heiss <c.heiss@proxmox.com>
+---
+ ifupdown2/addons/address.py |  4 ++--
+ ifupdown2/lib/nlcache.py    | 41 +++++++++++++++++++++++++++++++++++++
+ ifupdown2/lib/sysfs.py      | 22 --------------------
+ 3 files changed, 43 insertions(+), 24 deletions(-)
+
+diff --git a/ifupdown2/addons/address.py b/ifupdown2/addons/address.py
+index 25270c3..377b419 100644
+--- a/ifupdown2/addons/address.py
++++ b/ifupdown2/addons/address.py
+@@ -1196,7 +1196,7 @@ class address(AddonWithIpBlackList, moduleBase):
+         #
+         # alias
+         #
+-        self.sysfs.link_set_alias(ifaceobj.name, ifaceobj.get_attr_value_first("alias"))
++        self.netlink.link_set_alias(ifaceobj.name, ifaceobj.get_attr_value_first("alias"))
+ 
+         self._sysctl_config(ifaceobj)
+ 
+@@ -1400,7 +1400,7 @@ class address(AddonWithIpBlackList, moduleBase):
+             if not ifaceobj.link_kind:
+                 alias = ifaceobj.get_attr_value_first("alias")
+                 if alias:
+-                    self.sysfs.link_set_alias(ifaceobj.name, None)  # None to reset alias.
++                    self.netlink.link_set_alias(ifaceobj.name, None)  # None to reset alias.
+ 
+             # XXX hwaddress reset cannot happen because we dont know last
+             # address.
+diff --git a/ifupdown2/lib/nlcache.py b/ifupdown2/lib/nlcache.py
+index a36e610..3f79f71 100644
+--- a/ifupdown2/lib/nlcache.py
++++ b/ifupdown2/lib/nlcache.py
+@@ -409,6 +409,18 @@ class _NetlinkCache:
+         except Exception:
+             pass
+ 
++    def override_link_alias(self, ifname, alias):
++        """
++        Manually override link alias in the cache and ignore any failures
++        :param ifname: Name of the interface to update
++        :param alias: New interface alias
++        """
++        try:
++            with self._cache_lock:
++                self._link_cache[ifname].attributes[Link.IFLA_IFALIAS].value = alias
++        except Exception:
++            pass
++
+     def override_cache_unslave_link(self, slave, master):
+         """
+         Manually update the cache unslaving SLAVE from MASTER
+@@ -3335,6 +3347,35 @@ class NetlinkListenerWithCache(nllistener.NetlinkManagerWithListener, BaseObject
+         except Exception as e:
+             raise Exception(f'{ifname}: netlink: failed to set mtu to {mtu}: {str(e)}')
+ 
++    """
++    Sets the alias of the given link, updating the cache on success.
++
++    :param ifname: Name of the interface to update
++    :param alias: New alias to set for the interface.
++    :return: True if the operation was successful
++    """
++    def link_set_alias(self, ifname, alias):
++        if self.cache.get_link_alias(ifname) == alias:
++            # no need to update
++            return
++
++        self.logger.info(f'{ifname}: netlink: ip link set dev {ifname} alias {alias}')
++
++        debug = RTM_SETLINK in self.debug
++        try:
++            link = Link(RTM_SETLINK, debug, use_color=self.use_color)
++            link.flags = NLM_F_REPLACE | NLM_F_REQUEST | NLM_F_ACK
++            link.body = struct.pack('Bxxxiii', socket.AF_UNSPEC, 0, 0, 0)
++            link.add_attribute(Link.IFLA_IFNAME, ifname)
++            link.add_attribute(Link.IFLA_IFALIAS, alias or '') # empty string removes alias
++            link.build_message(next(self.sequence), self.pid)
++            result = self.tx_nlpacket_get_response_with_error(link)
++            self.cache.override_link_alias(ifname, alias)
++
++            return result
++        except Exception as e:
++            raise Exception(f'{ifname}: netlink: failed to set alias to {alias}: {str(e)}')
++
+     ############################################################################
+     # ADDRESS
+     ############################################################################
+diff --git a/ifupdown2/lib/sysfs.py b/ifupdown2/lib/sysfs.py
+index 3ac678d..fb1e405 100644
+--- a/ifupdown2/lib/sysfs.py
++++ b/ifupdown2/lib/sysfs.py
+@@ -106,28 +106,6 @@ class __Sysfs(IO, Requirements):
+         """
+         return self.read_file_oneline("/sys/class/net/%s/address" % ifname)
+ 
+-    #
+-    # ALIAS
+-    #
+-
+-    def link_set_alias(self, ifname, alias):
+-        cached_alias = self.cache.get_link_alias(ifname)
+-
+-        if cached_alias == alias:
+-            return
+-
+-        if not alias:
+-            alias = "\n"
+-
+-        if self.write_to_file("/sys/class/net/%s/ifalias" % ifname, alias):
+-            pass # self.cache.override_link_mtu(ifname, mtu_int)
+-
+-    def link_set_alias_dry_run(self, ifname, alias):
+-        # we can remove the cache check in DRYRUN mode
+-        if not alias:
+-            alias = ""
+-        self.write_to_file("/sys/class/net/%s/ifalias" % ifname, alias)
+-
+     ############################################################################
+     # BRIDGE
+     ############################################################################
+-- 
+2.50.1
+
