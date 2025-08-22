@@ -1,0 +1,318 @@
+From f7d6aa4769a86980ce0e93cc55f2ef0c6b4682a9 Mon Sep 17 00:00:00 2001
+From: Christoph Heiss <c.heiss@proxmox.com>
+Date: Wed, 20 Aug 2025 14:02:22 +0200
+Subject: [PATCH] addons, nlcache: set interface mtu through netlink instead of
+ sysfs
+
+The sysfs-based methods do not handle altnames at all. Instead, get/set
+interface MTUs through netlink directly, which also has transparent
+altname support, and is a more robust way in general.
+
+At the same time, this simplifies some things as it means that the MTU
+will always be present in the netlink cache.
+
+Along the way also clean up some weird mtu_{int,str}, where the MTU is
+passed around in the `address` as both string and integer.
+
+Signed-off-by: Christoph Heiss <c.heiss@proxmox.com>
+---
+ ifupdown2/addons/address.py        | 65 +++++++++++++++++++-----------
+ ifupdown2/addons/addressvirtual.py |  2 +-
+ ifupdown2/addons/bridge.py         |  2 +-
+ ifupdown2/lib/iproute2.py          |  5 +--
+ ifupdown2/lib/nlcache.py           | 33 +++++++++++++++
+ ifupdown2/lib/sysfs.py             | 16 --------
+ 6 files changed, 78 insertions(+), 45 deletions(-)
+
+diff --git a/ifupdown2/addons/address.py b/ifupdown2/addons/address.py
+index 3196a5e..25270c3 100644
+--- a/ifupdown2/addons/address.py
++++ b/ifupdown2/addons/address.py
+@@ -430,7 +430,7 @@ class address(AddonWithIpBlackList, moduleBase):
+             except ValueError as e:
+                 self.logger.warning("%s: invalid mtu %s: %s" % (ifaceobj.name, mtu_str, str(e)))
+                 return False
+-            return self._check_mtu_config(ifaceobj, mtu_str, mtu_int, ifaceobj_getfunc, syntaxcheck=True)
++            return self._check_mtu_config(ifaceobj, mtu_int, ifaceobj_getfunc, syntaxcheck=True)
+         return True
+ 
+     def syntax_check_addr_allowed_on(self, ifaceobj, syntax_check=False):
+@@ -792,7 +792,14 @@ class address(AddonWithIpBlackList, moduleBase):
+             return ipv
+         return prev_gateways
+ 
+-    def _check_mtu_config(self, ifaceobj, mtu_str, mtu_int, ifaceobj_getfunc, syntaxcheck=False):
++    def _check_mtu_config(self, ifaceobj, mtu, ifaceobj_getfunc, syntaxcheck=False):
++        """
++        :param ifaceobj:
++        :param mtu: integer
++        :param ifaceobj_getfunc:
++        :param syntaxcheck: boolean
++        """
++
+         retval = True
+         if (ifaceobj.link_kind & ifaceLinkKind.BRIDGE):
+             if syntaxcheck:
+@@ -806,10 +813,10 @@ class address(AddonWithIpBlackList, moduleBase):
+                 masterobj = ifaceobj_getfunc(ifaceobj.upperifaces[0])
+                 if masterobj:
+                     master_mtu = masterobj[0].get_attr_value_first('mtu')
+-                    if master_mtu and master_mtu != mtu_str:
++                    if master_mtu and master_mtu != str(mtu):
+                         log_msg = ("%s: bond slave mtu %s is different from bond master %s mtu %s. "
+                                   "There is no need to configure mtu on a bond slave." %
+-                                   (ifaceobj.name, mtu_str, masterobj[0].name, master_mtu))
++                                   (ifaceobj.name, mtu, masterobj[0].name, master_mtu))
+                         if syntaxcheck:
+                             self.logger.warning(log_msg)
+                             retval = False
+@@ -823,24 +830,30 @@ class address(AddonWithIpBlackList, moduleBase):
+                         lowerdev_mtu = int(lowerobj[0].get_attr_value_first('mtu') or 0)
+                     else:
+                         lowerdev_mtu = self.cache.get_link_mtu(lowerobj[0].name)  # return type: int
+-                    if lowerdev_mtu and mtu_int > lowerdev_mtu:
++                    if lowerdev_mtu and mtu > lowerdev_mtu:
+                         self.logger.warning('%s: vlan dev mtu %s is greater than lower realdev %s mtu %s'
+-                                         %(ifaceobj.name, mtu_str, lowerobj[0].name, lowerdev_mtu))
++                                         %(ifaceobj.name, mtu, lowerobj[0].name, lowerdev_mtu))
+                         retval = False
+                     elif (not lowerobj[0].link_kind and
+                           not (lowerobj[0].link_privflags & ifaceLinkPrivFlags.LOOPBACK) and
+-                          not lowerdev_mtu and self.default_mtu and (mtu_int > self.default_mtu_int)):
++                          not lowerdev_mtu and self.default_mtu and (mtu > self.default_mtu_int)):
+                         # only check default mtu on lower device which is a physical interface
+                         self.logger.warning('%s: vlan dev mtu %s is greater than lower realdev %s mtu %s'
+-                                         %(ifaceobj.name, mtu_str, lowerobj[0].name, self.default_mtu))
++                                         %(ifaceobj.name, mtu, lowerobj[0].name, self.default_mtu))
+                         retval = False
+-            if self.max_mtu and mtu_int > self.max_mtu:
++            if self.max_mtu and mtu > self.max_mtu:
+                 self.logger.warning('%s: specified mtu %s is greater than max mtu %s'
+-                                 %(ifaceobj.name, mtu_str, self.max_mtu))
++                                 %(ifaceobj.name, mtu, self.max_mtu))
+                 retval = False
+         return retval
+ 
+-    def _propagate_mtu_to_upper_devs(self, ifaceobj, mtu_str, mtu_int, ifaceobj_getfunc):
++    def _propagate_mtu_to_upper_devs(self, ifaceobj, mtu, ifaceobj_getfunc):
++        """
++        :param ifaceobj:
++        :param mtu: integer
++        :param ifaceobj_getfunc:
++        """
++
+         if (not ifaceobj.upperifaces or
+             (ifaceobj.link_privflags & ifaceLinkPrivFlags.BOND_SLAVE) or
+             (ifaceobj.link_privflags & ifaceLinkPrivFlags.VRF_SLAVE) or
+@@ -855,15 +868,21 @@ class address(AddonWithIpBlackList, moduleBase):
+             umtu = upperobjs[0].get_attr_value_first('mtu')
+             if not umtu:
+                 running_mtu = self.cache.get_link_mtu(upperobjs[0].name)
+-                if not running_mtu or running_mtu != mtu_int:
+-                    self.sysfs.link_set_mtu(u, mtu_str=mtu_str, mtu_int=mtu_int)
++                if not running_mtu or running_mtu != mtu:
++                    self.netlink.link_set_mtu(u, mtu)
+ 
+-    def _process_mtu_config_mtu_valid(self, ifaceobj, ifaceobj_getfunc, mtu_str, mtu_int):
+-        if not self._check_mtu_config(ifaceobj, mtu_str, mtu_int, ifaceobj_getfunc):
++    def _process_mtu_config_mtu_valid(self, ifaceobj, ifaceobj_getfunc, mtu):
++        """
++        :param ifaceobj:
++        :param ifaceobj_getfunc:
++        :param mtu: integer
++        """
++
++        if not self._check_mtu_config(ifaceobj, mtu, ifaceobj_getfunc):
+             return
+ 
+-        if mtu_int != self.cache.get_link_mtu(ifaceobj.name):
+-            self.sysfs.link_set_mtu(ifaceobj.name, mtu_str=mtu_str, mtu_int=mtu_int)
++        if mtu != self.cache.get_link_mtu(ifaceobj.name):
++            self.netlink.link_set_mtu(ifaceobj.name, mtu)
+ 
+             if (not ifupdownflags.flags.ALL and
+                     not ifaceobj.link_kind and
+@@ -871,7 +890,7 @@ class address(AddonWithIpBlackList, moduleBase):
+                 # This is additional cost to us, so do it only when
+                 # ifupdown2 is called on a particular interface and
+                 # it is a physical interface
+-                self._propagate_mtu_to_upper_devs(ifaceobj, mtu_str, mtu_int, ifaceobj_getfunc)
++                self._propagate_mtu_to_upper_devs(ifaceobj, mtu, ifaceobj_getfunc)
+         return
+ 
+     def _process_mtu_config_mtu_none(self, ifaceobj):
+@@ -889,7 +908,7 @@ class address(AddonWithIpBlackList, moduleBase):
+                     or ifaceobj.link_kind & ifaceLinkKind.BRIDGE \
+                     or ifaceobj.link_kind & ifaceLinkKind.OTHER:
+                 if cached_link_mtu != self.default_mtu_int:
+-                    self.sysfs.link_set_mtu(ifaceobj.name, mtu_str=self.default_mtu, mtu_int=self.default_mtu_int)
++                    self.netlink.link_set_mtu(ifaceobj.name, self.default_mtu_int)
+                 return
+ 
+             # set vlan interface mtu to lower device mtu
+@@ -902,7 +921,7 @@ class address(AddonWithIpBlackList, moduleBase):
+                 lower_iface_mtu_int = self.cache.get_link_mtu(lower_iface)
+ 
+                 if lower_iface_mtu_int != cached_link_mtu:
+-                    self.sysfs.link_set_mtu(ifaceobj.name, mtu_str=str(lower_iface_mtu_int), mtu_int=lower_iface_mtu_int)
++                    self.netlink.link_set_mtu(ifaceobj.name, lower_iface_mtu_int)
+ 
+         elif (
+             ifaceobj.name != 'lo'
+@@ -919,7 +938,7 @@ class address(AddonWithIpBlackList, moduleBase):
+             # config by the kernel in play, we try to be cautious here
+             # on which devices we want to reset mtu to default.
+             # essentially only physical interfaces which are not bond slaves
+-            self.sysfs.link_set_mtu(ifaceobj.name, mtu_str=self.default_mtu, mtu_int=self.default_mtu_int)
++            self.netlink.link_set_mtu(ifaceobj.name, self.default_mtu_int)
+ 
+     def _set_bridge_forwarding(self, ifaceobj):
+         """ set ip forwarding to 0 if bridge interface does not have a
+@@ -1105,7 +1124,7 @@ class address(AddonWithIpBlackList, moduleBase):
+                     self.logger.warning("%s: invalid MTU value: %s" % (ifaceobj.name, str(e)))
+                 return
+ 
+-            self._process_mtu_config_mtu_valid(ifaceobj, ifaceobj_getfunc, mtu_str, mtu_int)
++            self._process_mtu_config_mtu_valid(ifaceobj, ifaceobj_getfunc, mtu_int)
+         else:
+             self._process_mtu_config_mtu_none(ifaceobj)
+ 
+@@ -1373,7 +1392,7 @@ class address(AddonWithIpBlackList, moduleBase):
+             # ifupdown2. If this MTU is different from our default mtu,
+             # if so we need to reset it back to default.
+             if not ifaceobj.link_kind and self.default_mtu and ifaceobj.get_attr_value_first('mtu') and self.cache.get_link_mtu(ifaceobj.name) != self.default_mtu_int:
+-                self.sysfs.link_set_mtu(ifaceobj.name, mtu_str=self.default_mtu, mtu_int=self.default_mtu_int)
++                self.netlink.link_set_mtu(ifaceobj.name, self.default_mtu_int)
+ 
+             #
+             # alias
+diff --git a/ifupdown2/addons/addressvirtual.py b/ifupdown2/addons/addressvirtual.py
+index 587f39f..80cd820 100644
+--- a/ifupdown2/addons/addressvirtual.py
++++ b/ifupdown2/addons/addressvirtual.py
+@@ -540,7 +540,7 @@ class addressvirtual(AddonWithIpBlackList, moduleBase):
+                     update_mtu = False
+ 
+                     try:
+-                        self.sysfs.link_set_mtu(macvlan_ifname, mtu_str=lower_iface_mtu_str, mtu_int=lower_iface_mtu)
++                        self.netlink.link_set_mtu(macvlan_ifname, lower_iface_mtu)
+                     except Exception as e:
+                         self.logger.info('%s: failed to set mtu %s: %s' % (macvlan_ifname, lower_iface_mtu, e))
+ 
+diff --git a/ifupdown2/addons/bridge.py b/ifupdown2/addons/bridge.py
+index 1da8de7..dee6f7b 100644
+--- a/ifupdown2/addons/bridge.py
++++ b/ifupdown2/addons/bridge.py
+@@ -2765,7 +2765,7 @@ class bridge(Bridge, moduleBase):
+ 
+             bridge_mtu = self.get_bridge_mtu(ifaceobj)
+             if bridge_mtu:
+-                self.sysfs.link_set_mtu(ifname, bridge_mtu, int(bridge_mtu))
++                self.netlink.link_set_mtu(ifname, int(bridge_mtu))
+         else:
+             link_just_created = False
+             self.logger.info('%s: bridge already exists' % ifname)
+diff --git a/ifupdown2/lib/iproute2.py b/ifupdown2/lib/iproute2.py
+index 7e7366c..3760963 100644
+--- a/ifupdown2/lib/iproute2.py
++++ b/ifupdown2/lib/iproute2.py
+@@ -518,10 +518,7 @@ class IPRoute2(Cache, Requirements):
+             self.logger.info("%s: cannot set addrgen: ipv6 is disabled on this device" % ifname)
+             return False
+ 
+-        if link_created:
+-            link_mtu = self.sysfs.link_get_mtu(ifname)
+-        else:
+-            link_mtu = self.cache.get_link_mtu(ifname)
++        link_mtu = self.cache.get_link_mtu(ifname)
+ 
+         if link_mtu < 1280:
+             self.logger.info("%s: ipv6 addrgen is disabled on device with MTU "
+diff --git a/ifupdown2/lib/nlcache.py b/ifupdown2/lib/nlcache.py
+index e5a42ef..a36e610 100644
+--- a/ifupdown2/lib/nlcache.py
++++ b/ifupdown2/lib/nlcache.py
+@@ -60,6 +60,7 @@ try:
+         NLM_F_REQUEST, \
+         NLM_F_CREATE, \
+         NLM_F_ACK, \
++        NLM_F_REPLACE, \
+         RT_SCOPES, \
+         INFINITY_LIFE_TIME
+ 
+@@ -91,6 +92,7 @@ except (ImportError, ModuleNotFoundError):
+         NLM_F_REQUEST, \
+         NLM_F_CREATE, \
+         NLM_F_ACK, \
++        NLM_F_REPLACE, \
+         RT_SCOPES, \
+         INFINITY_LIFE_TIME
+ 
+@@ -3302,6 +3304,37 @@ class NetlinkListenerWithCache(nllistener.NetlinkManagerWithListener, BaseObject
+     def link_translate_altnames(self, ifnames):
+         return self.cache.link_translate_altnames(ifnames)
+ 
++    ###
++
++    """
++    Sets the MTU of the given link, updating the cache on success.
++
++    :param ifname: str - Name of the interface to update
++    :param mtu: int - New MTU to set for the interface.
++    :return: True if the operation was successful
++    """
++    def link_set_mtu(self, ifname, mtu):
++        if self.cache.get_link_mtu(ifname) == mtu:
++            # no need to update
++            return
++
++        self.logger.info(f'{ifname}: netlink: ip link set dev {ifname} mtu {mtu}')
++
++        debug = RTM_SETLINK in self.debug
++        try:
++            link = Link(RTM_SETLINK, debug, use_color=self.use_color)
++            link.flags = NLM_F_REPLACE | NLM_F_REQUEST | NLM_F_ACK
++            link.body = struct.pack('Bxxxiii', socket.AF_UNSPEC, 0, 0, 0)
++            link.add_attribute(Link.IFLA_IFNAME, ifname)
++            link.add_attribute(Link.IFLA_MTU, mtu)
++            link.build_message(next(self.sequence), self.pid)
++            result = self.tx_nlpacket_get_response_with_error(link)
++            self.cache.override_link_mtu(ifname, mtu)
++
++            return result
++        except Exception as e:
++            raise Exception(f'{ifname}: netlink: failed to set mtu to {mtu}: {str(e)}')
++
+     ############################################################################
+     # ADDRESS
+     ############################################################################
+diff --git a/ifupdown2/lib/sysfs.py b/ifupdown2/lib/sysfs.py
+index dd9f361..3ac678d 100644
+--- a/ifupdown2/lib/sysfs.py
++++ b/ifupdown2/lib/sysfs.py
+@@ -106,22 +106,6 @@ class __Sysfs(IO, Requirements):
+         """
+         return self.read_file_oneline("/sys/class/net/%s/address" % ifname)
+ 
+-    #
+-    # MTU
+-    #
+-
+-    def link_get_mtu(self, ifname):
+-        return int(self.read_file_oneline("/sys/class/net/%s/mtu" % ifname) or 0)
+-
+-    def link_set_mtu(self, ifname, mtu_str, mtu_int):
+-        if self.cache.get_link_mtu(ifname) != mtu_int:
+-            if self.write_to_file('/sys/class/net/%s/mtu' % ifname, mtu_str):
+-                self.cache.override_link_mtu(ifname, mtu_int)
+-
+-    def link_set_mtu_dry_run(self, ifname, mtu_str, mtu_int):
+-        # we can remove the cache check in DRYRUN mode
+-        self.write_to_file('/sys/class/net/%s/mtu' % ifname, mtu_str)
+-
+     #
+     # ALIAS
+     #
+-- 
+2.50.1
+
