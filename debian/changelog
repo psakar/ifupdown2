@@ -1,3 +1,15 @@
+ifupdown2 (3.3.0-1+pmx10) trixie; urgency=medium
+
+  * fix setting MTU and ifalias when using interface altnames.
+
+  * fix querying if IPv6 is disabled when using interface altnames.
+
+  * resolve any altname to the primary name when operating on the sysfs.
+
+  * improve robustness of decoding IPv6 device config attributes.
+
+ -- Proxmox Support Team <support@proxmox.com>  Tue, 26 Aug 2025 16:33:26 +0200
+
 ifupdown2 (3.3.0-1+pmx9) trixie; urgency=medium
 
   * translate bond-slaves altnames directly on attribute read.
