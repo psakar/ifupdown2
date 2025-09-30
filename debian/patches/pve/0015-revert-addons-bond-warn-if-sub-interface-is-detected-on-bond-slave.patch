@@ -1,0 +1,52 @@
+From 9a5516c7fdcb35c7a4911bbf2b6bbf1708e5b976 Mon Sep 17 00:00:00 2001
+From: Stefan Hanreich <s.hanreich@proxmox.com>
+Date: Tue, 30 Sep 2025 15:50:33 +0200
+Subject: [PATCH] Revert "addons: bond: warn if sub interface is detected on
+ bond slave"
+
+This mostly reverts commit c50aff4f702ea366955552865aceab5b3735513a.
+
+Signed-off-by: Stefan Hanreich <s.hanreich@proxmox.com>
+ [TL: do not revert the typo fix]
+Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
+---
+ ifupdown2/addons/bond.py | 18 +-----------------
+ 1 file changed, 0 insertion(+), 16 deletions(-)
+
+diff --git a/ifupdown2/addons/bond.py b/ifupdown2/addons/bond.py
+index f2d38de..74d2cab 100644
+--- a/ifupdown2/addons/bond.py
++++ b/ifupdown2/addons/bond.py
+@@ -407,19 +407,6 @@ class bond(Addon, moduleBase):
+                 bond_speed = slave_speed
+         return bond_speed
+ 
+-    def get_bond_slave_upper_dev_ifaceobj(self, ifname, ifaceobj_getfunc):
+-        for ifaceobj in ifaceobj_getfunc(ifname):
+-            yield from ifaceobj.upperifaces or []
+-
+-    def slave_has_no_subinterface(self, bond_ifaceobj, slave, ifaceobj_getfunc):
+-        for upper_ifname in self.get_bond_slave_upper_dev_ifaceobj(slave, ifaceobj_getfunc):
+-            if upper_ifname != bond_ifaceobj.name:
+-                self.log_error(
+-                    f"{bond_ifaceobj.name}: sub interfaces are not allowed on bond slave: {slave} ({upper_ifname})",
+-                    bond_ifaceobj
+-                )
+-        return True
+-
+     def _add_slaves(self, ifaceobj, runningslaves, ifaceobj_getfunc=None):
+         # reset the current_bond_speed
+         self.current_bond_speed = -1
+@@ -452,9 +439,6 @@ class bond(Addon, moduleBase):
+             except Exception as e:
+                 self.logger.debug("%s: bond-slave (%s) speed validation failed: %s" % (ifaceobj.name, slave, str(e)))
+ 
+-            if not self.slave_has_no_subinterface(ifaceobj, slave, ifaceobj_getfunc):
+-                continue
+-
+             link_up = False
+             if self.cache.link_is_up(slave):
+                 self.netlink.link_down_force(slave)
+-- 
+2.47.3
+
