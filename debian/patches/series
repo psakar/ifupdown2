@@ -13,4 +13,5 @@ pve/0012-addons-nlcache-set-interface-mtu-through-netlink-ins.patch
 pve/0013-addons-nlcache-set-interface-alias-through-netlink-i.patch
 upstream/0001-add-ipv6-slaac-support-inet6-auto-and-accept_ra.patch
 upstream/0001-use-raw-strings-for-regex-to-fix-backslash-interpret.patch
+upstream/0002-vxlan-add-support-for-IPv6-vxlan-local-tunnelip.patch
 pve/0014-nlmanager-read-ipv6-devconf-disable_ipv6-attribute-t.patch

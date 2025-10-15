@@ -1,0 +1,223 @@
+From 2a5ecec56a2ae6bac088a3a853582d7b452f065b Mon Sep 17 00:00:00 2001
+From: Christoph Heiss <c.heiss@proxmox.com>
+Date: Thu, 17 Jul 2025 14:13:01 +0200
+Subject: [PATCH] vxlan: add support for IPv6 vxlan-local-tunnelip
+
+Add the option to pass an IPv6 address instead of an IPv4 address to
+`vxlan-local-tunnelip`, to use either one as local tunnel IP address.
+
+With this change, it's possible to use an IPv6 network as the underlay
+for a VXLAN based network, without the need for IPv4.
+
+Upstream-Link: https://github.com/CumulusNetworks/ifupdown2/pull/315
+Co-Authored-by: Wido den Hollander <wido@widodh.nl>
+Signed-off-by: Christoph Heiss <c.heiss@proxmox.com>
+---
+ ifupdown2/addons/vxlan.py | 38 +++++++++++++++++++++++++++-----------
+ ifupdown2/lib/iproute2.py | 26 +++++++++++++++++++-------
+ ifupdown2/lib/nlcache.py  |  5 ++++-
+ 3 files changed, 50 insertions(+), 19 deletions(-)
+
+diff --git a/ifupdown2/addons/vxlan.py b/ifupdown2/addons/vxlan.py
+index 2a4857d..bb1a6ca 100644
+--- a/ifupdown2/addons/vxlan.py
++++ b/ifupdown2/addons/vxlan.py
+@@ -51,7 +51,7 @@ class vxlan(Vxlan, moduleBase):
+             },
+             "vxlan-local-tunnelip": {
+                 "help": "vxlan local tunnel ip",
+-                "validvals": ["<ipv4>"],
++                "validvals": ["<ipv4>", "<ipv6>"],
+                 "example": ["vxlan-local-tunnelip 172.16.20.103"]
+             },
+             "vxlan-svcnodeip": {
+@@ -520,8 +520,12 @@ class vxlan(Vxlan, moduleBase):
+         if not local and self._vxlan_local_tunnelip:
+             local = self._vxlan_local_tunnelip
+ 
++        cached_ifla_vxlan_local = None
+         if link_exists:
+-            cached_ifla_vxlan_local = cached_vxlan_ifla_info_data.get(Link.IFLA_VXLAN_LOCAL)
++            if Link.IFLA_VXLAN_LOCAL in cached_vxlan_ifla_info_data:
++                 cached_ifla_vxlan_local = cached_vxlan_ifla_info_data.get(Link.IFLA_VXLAN_LOCAL)
++            elif Link.IFLA_VXLAN_LOCAL6 in cached_vxlan_ifla_info_data:
++                 cached_ifla_vxlan_local = cached_vxlan_ifla_info_data.get(Link.IFLA_VXLAN_LOCAL6)
+ 
+             # on ifreload do not overwrite anycast_ip to individual ip
+             # if clagd has modified
+@@ -536,8 +540,6 @@ class vxlan(Vxlan, moduleBase):
+                 ):
+                     local = cached_ifla_vxlan_local = anycastip
+                     self.logger.info("%s: clagd-vxlan-anycast-ip (%s) inherited from loopback interface" % (ifname, local))
+-        else:
+-            cached_ifla_vxlan_local = None
+ 
+         if not local:
+             local = policymanager.policymanager_api.get_attr_default(
+@@ -547,7 +549,7 @@ class vxlan(Vxlan, moduleBase):
+ 
+         if local:
+             try:
+-                local = ipnetwork.IPv4Address(local)
++                local = ipnetwork.IPAddress(local)
+ 
+                 if local.initialized_with_prefixlen:
+                     self.logger.warning("%s: vxlan-local-tunnelip %s: netmask ignored" % (ifname, local))
+@@ -555,17 +557,22 @@ class vxlan(Vxlan, moduleBase):
+             except Exception as e:
+                 raise Exception("%s: invalid vxlan-local-tunnelip %s: %s" % (ifname, local, str(e)))
+ 
+-
+         if local:
+             if local != cached_ifla_vxlan_local:
+                 self.logger.info("%s: set vxlan-local-tunnelip %s" % (ifname, local))
+-                user_request_vxlan_info_data[Link.IFLA_VXLAN_LOCAL] = local
++                if local.version == 4:
++                    user_request_vxlan_info_data[Link.IFLA_VXLAN_LOCAL] = local
++                    # user_request_vxlan_info_data[Link.IFLA_VXLAN_LOCAL6] = None
++                else:
++                    # user_request_vxlan_info_data[Link.IFLA_VXLAN_LOCAL] = None
++                    user_request_vxlan_info_data[Link.IFLA_VXLAN_LOCAL6] = local
+ 
+                 # if both local-ip and anycast-ip are identical the function prints a warning
+                 self.syntax_check_localip_anycastip_equal(ifname, local, self._clagd_vxlan_anycast_ip)
+         elif cached_ifla_vxlan_local:
+             self.logger.info("%s: removing vxlan-local-tunnelip (cache %s)" % (ifname, cached_ifla_vxlan_local))
+             user_request_vxlan_info_data[Link.IFLA_VXLAN_LOCAL] = None
++            user_request_vxlan_info_data[Link.IFLA_VXLAN_LOCAL6] = None
+ 
+         return local
+ 
+@@ -1174,7 +1181,8 @@ class vxlan(Vxlan, moduleBase):
+                         vxlan_physdev,
+                         user_request_vxlan_info_data.get(Link.IFLA_VXLAN_PORT),
+                         vxlan_vnifilter,
+-                        vxlan_ttl
++                        vxlan_ttl,
++                        local.version if local else 4
+                     )
+                 elif ifaceobj.link_privflags & ifaceLinkPrivFlags.L3VXI:
+                     self.iproute2.link_add_l3vxi(
+@@ -1184,7 +1192,8 @@ class vxlan(Vxlan, moduleBase):
+                         group.ip if group else None,
+                         vxlan_physdev,
+                         user_request_vxlan_info_data.get(Link.IFLA_VXLAN_PORT),
+-                        vxlan_ttl
++                        vxlan_ttl,
++                        local.version if local else 4
+                     )
+                 else:
+                     try:
+@@ -1236,7 +1245,7 @@ class vxlan(Vxlan, moduleBase):
+         if remoteips:
+             try:
+                 for remoteip in remoteips:
+-                    ipnetwork.IPv4Address(remoteip)
++                    ipnetwork.IPAddress(remoteip)
+             except Exception as e:
+                 self.log_error('%s: vxlan-remoteip: %s' % (ifaceobj.name, str(e)))
+ 
+@@ -1508,7 +1517,13 @@ class vxlan(Vxlan, moduleBase):
+         #
+         # vxlan-local-tunnelip
+         #
+-        running_attrval = cached_vxlan_ifla_info_data.get(Link.IFLA_VXLAN_LOCAL)
++
++        running_attrval = None
++        if Link.IFLA_VXLAN_LOCAL in cached_vxlan_ifla_info_data:
++             running_attrval = cached_vxlan_ifla_info_data.get(Link.IFLA_VXLAN_LOCAL)
++        elif Link.IFLA_VXLAN_LOCAL6 in cached_vxlan_ifla_info_data:
++             running_attrval = cached_vxlan_ifla_info_data.get(Link.IFLA_VXLAN_LOCAL6)
++
+         attrval = ifaceobj.get_attr_value_first('vxlan-local-tunnelip')
+         if not attrval:
+             attrval = self._vxlan_local_tunnelip
+@@ -1708,6 +1723,7 @@ class vxlan(Vxlan, moduleBase):
+                 ('vxlan-learning', Link.IFLA_VXLAN_LEARNING, lambda value: 'on' if value else 'off'),
+                 ('vxlan-udp-csum', Link.IFLA_VXLAN_UDP_CSUM, lambda value: 'on' if value else 'off'),
+                 ('vxlan-local-tunnelip', Link.IFLA_VXLAN_LOCAL, str),
++                ('vxlan-local-tunnelip', Link.IFLA_VXLAN_LOCAL6, str),
+         ):
+             vxlan_attr_value = cached_vxlan_ifla_info_data.get(vxlan_attr_nl)
+ 
+diff --git a/ifupdown2/lib/iproute2.py b/ifupdown2/lib/iproute2.py
+index 3760963..2f1ea2c 100644
+--- a/ifupdown2/lib/iproute2.py
++++ b/ifupdown2/lib/iproute2.py
+@@ -280,17 +280,22 @@ class IPRoute2(Cache, Requirements):
+ 
+     ###
+ 
+-    def link_add_single_vxlan(self, link_exists, ifname, ip, group, physdev, port, vnifilter="off", ttl=None):
+-        self.logger.info("creating single vxlan device: %s" % ifname)
++    def link_add_single_vxlan(self, link_exists, ifname, ip, group, physdev, port, vnifilter="off", ttl=None, ipversion=4):
++        cmd = []
++
++        if ipversion == 6:
++            cmd.append("-6")
+ 
+         if link_exists:
++            self.logger.info("updating single vxlan device: %s" % ifname)
+             # When updating an SVD we need to use `ip link set` and we have to
+             # drop the external keyword:
+             # $ ip link set dev vxlan0 type vxlan external local 27.0.0.242 dev ipmr-lo
+             # Error: vxlan: cannot change COLLECT_METADATA flag.
+-            cmd = ["link set dev %s type vxlan" % ifname]
++            cmd.append("link set dev %s type vxlan" % ifname)
+         else:
+-            cmd = ["link add dev %s type vxlan external" % ifname]
++            self.logger.info("creating single vxlan device: %s" % ifname)
++            cmd.append("link add dev %s type vxlan external" % ifname)
+ 
+             # when changing local ip, if we specify vnifilter we get:
+             # Error: vxlan: cannot change flag.
+@@ -316,20 +321,27 @@ class IPRoute2(Cache, Requirements):
+         self.__execute_or_batch(utils.ip_cmd, " ".join(cmd))
+         self.__update_cache_after_link_creation(ifname, "vxlan")
+ 
+-    def link_add_l3vxi(self, link_exists, ifname, ip, group, physdev, port, ttl=None):
++    def link_add_l3vxi(self, link_exists, ifname, ip, group, physdev, port, ttl=None, ipversion=4):
+         self.logger.info("creating l3vxi device: %s" % ifname)
+ 
++        cmd = []
++
++        if ipversion == 6:
++            cmd.append("-6")
++
+         if link_exists:
++            self.logger.info("updating l3vxi device: %s" % ifname)
+             # When updating an SVD we need to use `ip link set` and we have to
+             # drop the external keyword:
+             # $ ip link set dev vxlan0 type vxlan external local 27.0.0.242 dev ipmr-lo
+             # Error: vxlan: cannot change COLLECT_METADATA flag.
+-            cmd = ["link set dev %s type vxlan" % ifname]
++            cmd.append("link set dev %s type vxlan" % ifname)
+         else:
+-            cmd = ["link add dev %s type vxlan external vnifilter" % ifname]
++            self.logger.info("creating l3vxi device: %s" % ifname)
+             # when changing local ip, if we specify vnifilter we get:
+             # Error: vxlan: cannot change flag.
+             # So we are only setting this attribute on vxlan creation
++            cmd.append("link add dev %s type vxlan external vnifilter" % ifname)
+ 
+         if ip:
+             cmd.append("local %s" % ip)
+diff --git a/ifupdown2/lib/nlcache.py b/ifupdown2/lib/nlcache.py
+index 3f79f71..9d65214 100644
+--- a/ifupdown2/lib/nlcache.py
++++ b/ifupdown2/lib/nlcache.py
+@@ -3164,7 +3164,10 @@ class NetlinkListenerWithCache(nllistener.NetlinkManagerWithListener, BaseObject
+ 
+                 if local:
+                     cmd.append("local %s" % local)
+-                    info_data[nlpacket.Link.IFLA_VXLAN_LOCAL] = local
++                    if local.version == 4:
++                        info_data[nlpacket.Link.IFLA_VXLAN_LOCAL] = local
++                    else:
++                        info_data[nlpacket.Link.IFLA_VXLAN_LOCAL6] = local
+ 
+                 if ageing:
+                     cmd.append("ageing %s" % ageing)
+-- 
+2.51.0
+
