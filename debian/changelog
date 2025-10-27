@@ -1,3 +1,11 @@
+ifupdown2 (3.3.0-1+pmx11) trixie; urgency=medium
+
+  * vxlan: add support for IPv6 vxlan-local-tunnelip
+
+  * fix regression for adding (VLAN) sub-interfaces on bond members.
+
+ -- Proxmox Support Team <support@proxmox.com>  Mon, 27 Oct 2025 15:31:17 +0100
+
 ifupdown2 (3.3.0-1+pmx10) trixie; urgency=medium
 
   * fix setting MTU and ifalias when using interface altnames.
