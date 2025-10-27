@@ -12,7 +12,7 @@ fix_dhclient_file_with_space()
     # because of a typo an older ifupdown2 version was creating lease file
     # with trailing space. In case we still have users with such files we
     # need to strip that trailing whitespace.
-    for filename in `find /var/lib/dhcp/ -name "dhclient.*.leases "`
+    for filename in `find /var/lib/dhcp/ -name "dhclient.*.leases " 2>/dev/null`
     do
         if [ -f "$filename " ];
         then
