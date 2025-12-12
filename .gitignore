@@ -1,0 +1,4 @@
+*.deb
+*.buildinfo
+*.changes
+/ifupdown2-[0-9]*/
