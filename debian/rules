@@ -13,9 +13,9 @@ override_dh_installman:
 
 override_dh_install:
 	dh_install
-	mkdir -p debian/ifupdown2/lib/systemd/system/
-	install --mode=644 debian/ifup@.service debian/ifupdown2/lib/systemd/system/
-	install --mode=644 debian/ifupdown2-pre.service debian/ifupdown2/lib/systemd/system/
+	mkdir -p debian/ifupdown2/usr/lib/systemd/system/
+	install --mode=644 debian/ifup@.service debian/ifupdown2/usr/lib/systemd/system/
+	install --mode=644 debian/ifupdown2-pre.service debian/ifupdown2/usr/lib/systemd/system/
 
 
 override_dh_installsystemd:
