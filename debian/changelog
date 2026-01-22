@@ -1,3 +1,10 @@
+ifupdown2 (3.3.0-1+pmx12) trixie; urgency=medium
+
+  * packaging: avoid installing executables and systemd service files inside
+    aliased bin or lib locations.
+
+ -- Proxmox Support Team <support@proxmox.com>  Thu, 22 Jan 2026 22:11:27 +0100
+
 ifupdown2 (3.3.0-1+pmx11) trixie; urgency=medium
 
   * vxlan: add support for IPv6 vxlan-local-tunnelip
