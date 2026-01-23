@@ -28,6 +28,8 @@ $(BUILDDIR): submodule
 
 .PHONY: deb dsc
 deb: $(DEB)
+	lintian $<
+
 $(DEB): $(BUILDDIR)
 	cd $(BUILDDIR); dpkg-buildpackage -b -uc -us
 
@@ -35,6 +37,8 @@ $(ORIG_SRC_TAR): $(BUILDDIR)
 	tar czf $(ORIG_SRC_TAR) --exclude="$(BUILDDIR)/debian" $(BUILDDIR)
 
 dsc: $(DSC)
+	lintian $<
+
 $(DSC): $(BUILDDIR) $(ORIG_SRC_TAR)
 	cd $(BUILDDIR); dpkg-buildpackage -S -uc -us -d
 
