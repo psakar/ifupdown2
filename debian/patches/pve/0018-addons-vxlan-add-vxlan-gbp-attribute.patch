@@ -1,0 +1,228 @@
+From 48fbd1d9d7e9d1e4c9682468ca2dac90d137e33f Mon Sep 17 00:00:00 2001
+From: Hannes Laimer <h.laimer@proxmox.com>
+Date: Fri, 28 Aug 2026 14:42:05 +0200
+Subject: [PATCH] addons: vxlan: add vxlan-gbp attribute
+
+Add a vxlan-gbp attribute, threading the GBP netlink flag through the
+netlink and iproute2 create paths. The flag is create-only, so it is only
+set on create, with a warning when a running device diverges. Being
+encoded by presence, ifquery matches a configured "off" against an absent
+flag.
+
+Signed-off-by: Hannes Laimer <h.laimer@proxmox.com>
+---
+ ifupdown2/addons/vxlan.py       | 56 +++++++++++++++++++++++++++++++--
+ ifupdown2/lib/iproute2.py       | 14 +++++++--
+ ifupdown2/nlmanager/nlpacket.py | 20 ++++++++++++
+ 3 files changed, 85 insertions(+), 5 deletions(-)
+
+diff --git a/ifupdown2/addons/vxlan.py b/ifupdown2/addons/vxlan.py
+index bb1a6ca..1e1fda3 100644
+--- a/ifupdown2/addons/vxlan.py
++++ b/ifupdown2/addons/vxlan.py
+@@ -145,7 +145,14 @@ class vxlan(Vxlan, moduleBase):
+                 "help": "L3 VxLAN interface (vni list and range are supported)",
+                 "validvals": ["<number>"],
+                 "example": ["vxlan-vni 42"]
+-            }
++            },
++            "vxlan-gbp": {
++                "help": "enable VXLAN Group Based Policy, create-only since the"
++                        " kernel cannot toggle it on a running vxlan device",
++                "validvals": ["yes", "no", "on", "off"],
++                "default": "no",
++                "example": ["vxlan-gbp yes"],
++            },
+         }
+     }
+ 
+@@ -908,6 +915,28 @@ class vxlan(Vxlan, moduleBase):
+             self.logger.info("%s: set vxlan-learning %s" % (ifaceobj.name, "on" if vxlan_learning else "off"))
+             user_request_vxlan_info_data[Link.IFLA_VXLAN_LEARNING] = vxlan_learning
+ 
++    def __config_vxlan_gbp(self, ifaceobj, link_exists, user_request_vxlan_info_data, cached_vxlan_ifla_info_data):
++        vxlan_gbp_str = self.__get_vxlan_attribute(ifaceobj, "vxlan-gbp")
++        if not vxlan_gbp_str:
++            return
++
++        vxlan_gbp = utils.get_boolean_from_string(vxlan_gbp_str)
++        cached_gbp = bool(cached_vxlan_ifla_info_data.get(Link.IFLA_VXLAN_GBP))
++
++        if link_exists and vxlan_gbp != cached_gbp:
++            # IFLA_VXLAN_GBP is a NLA_FLAG and the kernel only honors it at
++            # device creation, changing it on a running vxlan is rejected.
++            self.logger.warning(
++                "%s: vxlan-gbp can only be set at vxlan device creation,"
++                " recreate the interface to change it (current %s, requested %s)"
++                % (ifaceobj.name, "on" if cached_gbp else "off", "on" if vxlan_gbp else "off")
++            )
++            return
++
++        if vxlan_gbp and not link_exists:
++            self.logger.info("%s: set vxlan-gbp on" % ifaceobj.name)
++            user_request_vxlan_info_data[Link.IFLA_VXLAN_GBP] = True
++
+     def __config_vxlan_udp_csum(self, ifaceobj, link_exists, user_request_vxlan_info_data, cached_vxlan_ifla_info_data):
+         vxlan_udp_csum = ifaceobj.get_attr_value_first('vxlan-udp-csum')
+ 
+@@ -1111,6 +1140,7 @@ class vxlan(Vxlan, moduleBase):
+             self.__config_vxlan_id(ifname, ifaceobj, vxlan_id_str, user_request_vxlan_info_data, cached_vxlan_ifla_info_data)
+ 
+         self.__config_vxlan_learning(ifaceobj, link_exists, user_request_vxlan_info_data, cached_vxlan_ifla_info_data)
++        self.__config_vxlan_gbp(ifaceobj, link_exists, user_request_vxlan_info_data, cached_vxlan_ifla_info_data)
+         self.__config_vxlan_ageing(ifname, ifaceobj, link_exists, user_request_vxlan_info_data, cached_vxlan_ifla_info_data)
+         self.__config_vxlan_port(ifname, ifaceobj, link_exists, user_request_vxlan_info_data, cached_vxlan_ifla_info_data)
+         vxlan_ttl = self.__config_vxlan_ttl(ifname, ifaceobj, user_request_vxlan_info_data, cached_vxlan_ifla_info_data)
+@@ -1182,7 +1212,8 @@ class vxlan(Vxlan, moduleBase):
+                         user_request_vxlan_info_data.get(Link.IFLA_VXLAN_PORT),
+                         vxlan_vnifilter,
+                         vxlan_ttl,
+-                        local.version if local else 4
++                        local.version if local else 4,
++                        gbp=bool(user_request_vxlan_info_data.get(Link.IFLA_VXLAN_GBP))
+                     )
+                 elif ifaceobj.link_privflags & ifaceLinkPrivFlags.L3VXI:
+                     self.iproute2.link_add_l3vxi(
+@@ -1193,7 +1224,8 @@ class vxlan(Vxlan, moduleBase):
+                         vxlan_physdev,
+                         user_request_vxlan_info_data.get(Link.IFLA_VXLAN_PORT),
+                         vxlan_ttl,
+-                        local.version if local else 4
++                        local.version if local else 4,
++                        gbp=bool(user_request_vxlan_info_data.get(Link.IFLA_VXLAN_GBP))
+                     )
+                 else:
+                     try:
+@@ -1514,6 +1546,23 @@ class vxlan(Vxlan, moduleBase):
+             else:
+                 ifaceobjcurr.update_config_with_status(vxlan_attr_str, cached_vxlan_attr_value or 'None', 1)
+ 
++        #
++        # vxlan-gbp
++        #
++        # IFLA_VXLAN_GBP is a NLA_FLAG, so the attribute is present when on
++        # and absent when off. A missing cached value must compare equal to
++        # "off", which the generic string compare above cannot express,
++        # hence the dedicated check here.
++        #
++        vxlan_gbp_str = self.__get_vxlan_attribute(ifaceobj, "vxlan-gbp")
++        if vxlan_gbp_str:
++            vxlan_gbp = utils.get_boolean_from_string(vxlan_gbp_str)
++            cached_gbp = bool(cached_vxlan_ifla_info_data.get(Link.IFLA_VXLAN_GBP))
++            if vxlan_gbp == cached_gbp:
++                ifaceobjcurr.update_config_with_status('vxlan-gbp', vxlan_gbp_str, 0)
++            else:
++                ifaceobjcurr.update_config_with_status('vxlan-gbp', 'on' if cached_gbp else 'off', 1)
++
+         #
+         # vxlan-local-tunnelip
+         #
+@@ -1722,6 +1771,7 @@ class vxlan(Vxlan, moduleBase):
+                 ('vxlan-ageing', Link.IFLA_VXLAN_AGEING, str),
+                 ('vxlan-learning', Link.IFLA_VXLAN_LEARNING, lambda value: 'on' if value else 'off'),
+                 ('vxlan-udp-csum', Link.IFLA_VXLAN_UDP_CSUM, lambda value: 'on' if value else 'off'),
++                ('vxlan-gbp', Link.IFLA_VXLAN_GBP, lambda value: 'on' if value else 'off'),
+                 ('vxlan-local-tunnelip', Link.IFLA_VXLAN_LOCAL, str),
+                 ('vxlan-local-tunnelip', Link.IFLA_VXLAN_LOCAL6, str),
+         ):
+diff --git a/ifupdown2/lib/iproute2.py b/ifupdown2/lib/iproute2.py
+index 15b581e..c5268ed 100644
+--- a/ifupdown2/lib/iproute2.py
++++ b/ifupdown2/lib/iproute2.py
+@@ -280,7 +280,7 @@ class IPRoute2(Cache, Requirements):
+ 
+     ###
+ 
+-    def link_add_single_vxlan(self, link_exists, ifname, ip, group, physdev, port, vnifilter="off", ttl=None, ipversion=4):
++    def link_add_single_vxlan(self, link_exists, ifname, ip, group, physdev, port, vnifilter="off", ttl=None, ipversion=4, gbp=False):
+         cmd = []
+ 
+         if ipversion == 6:
+@@ -303,6 +303,11 @@ class IPRoute2(Cache, Requirements):
+             if vnifilter and utils.get_boolean_from_string(vnifilter):
+                 cmd.append("vnifilter")
+ 
++            # GBP, like vnifilter, is a create-only flag and cannot be
++            # toggled on a running device.
++            if gbp:
++                cmd.append("gbp")
++
+         if ip:
+             cmd.append("local %s" % ip)
+ 
+@@ -321,7 +326,7 @@ class IPRoute2(Cache, Requirements):
+         self.__execute_or_batch(utils.ip_cmd, " ".join(cmd))
+         self.__update_cache_after_link_creation(ifname, "vxlan")
+ 
+-    def link_add_l3vxi(self, link_exists, ifname, ip, group, physdev, port, ttl=None, ipversion=4):
++    def link_add_l3vxi(self, link_exists, ifname, ip, group, physdev, port, ttl=None, ipversion=4, gbp=False):
+         self.logger.info("creating l3vxi device: %s" % ifname)
+ 
+         cmd = []
+@@ -343,6 +348,11 @@ class IPRoute2(Cache, Requirements):
+             # So we are only setting this attribute on vxlan creation
+             cmd.append("link add dev %s type vxlan external vnifilter" % ifname)
+ 
++            # GBP, like vnifilter, is a create-only flag and cannot be
++            # toggled on a running device.
++            if gbp:
++                cmd.append("gbp")
++
+         if ip:
+             cmd.append("local %s" % ip)
+ 
+diff --git a/ifupdown2/nlmanager/nlpacket.py b/ifupdown2/nlmanager/nlpacket.py
+index c3b0b67..298c641 100644
+--- a/ifupdown2/nlmanager/nlpacket.py
++++ b/ifupdown2/nlmanager/nlpacket.py
+@@ -1043,6 +1043,11 @@ class Attribute(object):
+             return obj(self.value)
+         return self.value
+ 
++    @staticmethod
++    def decode_flag_attribute(data, _=None):
++        # NLA_FLAG, presence alone means True
++        return True
++
+     @staticmethod
+     def decode_one_byte_attribute(data, _=None):
+         # we don't need to use the unpack function because bytes are a list of ints
+@@ -1146,6 +1151,15 @@ class Attribute(object):
+         sub_attr_pack_layout.append("Bxxx")
+         sub_attr_payload.append(info_data_value)
+ 
++    @staticmethod
++    def encode_flag_attribute(sub_attr_pack_layout, sub_attr_payload, info_data_type, info_data_value):
++        # NLA_FLAG carries no payload, presence alone encodes True.
++        if not info_data_value:
++            return
++        sub_attr_pack_layout.append("HH")
++        sub_attr_payload.append(4)  # header-only length
++        sub_attr_payload.append(info_data_type)
++
+     @staticmethod
+     def encode_bond_xmit_hash_policy_attribute(sub_attr_pack_layout, sub_attr_payload, info_data_type, info_data_value):
+         return Attribute.encode_one_byte_attribute(
+@@ -2337,6 +2351,9 @@ class AttributeIFLA_LINKINFO(Attribute):
+                 NetlinkPacket_IFLA_LINKINFO_Attributes.IFLA_VXLAN_REMCSUM_RX: Attribute.decode_one_byte_attribute,
+                 NetlinkPacket_IFLA_LINKINFO_Attributes.IFLA_VXLAN_REPLICATION_TYPE: Attribute.decode_one_byte_attribute,
+ 
++                # flag attributes (zero-length) ################################
++                NetlinkPacket_IFLA_LINKINFO_Attributes.IFLA_VXLAN_GBP: Attribute.decode_flag_attribute,
++
+                 # 2 bytes network byte order attributes ########################
+                 NetlinkPacket_IFLA_LINKINFO_Attributes.IFLA_VXLAN_PORT: Attribute.decode_two_bytes_network_byte_order_attribute,
+ 
+@@ -2678,6 +2695,9 @@ class AttributeIFLA_LINKINFO(Attribute):
+                 NetlinkPacket_IFLA_LINKINFO_Attributes.IFLA_VXLAN_REMCSUM_RX: Attribute.encode_one_byte_attribute,
+                 NetlinkPacket_IFLA_LINKINFO_Attributes.IFLA_VXLAN_REPLICATION_TYPE: Attribute.encode_one_byte_attribute,
+ 
++                # flag attributes (zero-length) ################################
++                NetlinkPacket_IFLA_LINKINFO_Attributes.IFLA_VXLAN_GBP: Attribute.encode_flag_attribute,
++
+                 # 4 bytes attributes ###########################################
+                 NetlinkPacket_IFLA_LINKINFO_Attributes.IFLA_VXLAN_ID: Attribute.encode_four_bytes_attribute,
+                 NetlinkPacket_IFLA_LINKINFO_Attributes.IFLA_VXLAN_LINK: Attribute.encode_four_bytes_attribute,
+-- 
+2.47.3
+
