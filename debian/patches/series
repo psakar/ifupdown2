@@ -19,3 +19,4 @@ pve/0015-revert-addons-bond-warn-if-sub-interface-is-detected-on-bond-slave.patc
 upstream/0003-bond-preserve-mac-inherited-from-any-slave.patch
 upstream/0004-bond-fix-list-index-out-of-range.patch
 pve/0016-addons-bond-skip-mac-check-for-bonds-without-slaves.patch
+pve/0017-addons-vxlan-don-t-fail-syntax-check-on-missing-vxla.patch

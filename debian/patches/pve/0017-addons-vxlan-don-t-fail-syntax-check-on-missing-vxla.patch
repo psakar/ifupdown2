@@ -1,0 +1,39 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Gabriel Goller <g.goller@proxmox.com>
+Date: Mon, 14 Sep 2026 12:00:00 +0200
+Subject: [PATCH] addons: vxlan: don't fail syntax check on missing
+ vxlan-local-tunnelip
+
+vxlan-local-tunnelip is declared optional, both in the module's attribute
+description and in the generated man page. Without it the kernel picks
+the source address from the route to the remote endpoint, which is what
+we want for setups that use vxlan-physdev or a multicast group. The
+check is a Cumulus-ism that assumes every vxlan is anchored on a loopback
+address.
+
+The warning also made this whole check return False, so `ifup --syntax-check`
+failed for a perfectly valid configuration.
+
+The early return also skipped check_and_raise_svd_tvd_errors(), so a real
+single-vxlan/traditional-vxlan mixing error was suppressed until the interface
+was actually brought up. Removing the block restores that check for devices
+without a local tunnel ip.
+
+Signed-off-by: Gabriel Goller <g.goller@proxmox.com>
+---
+ ifupdown2/addons/vxlan.py |    4 ----
+ 1 file changed, 4 deletions(-)
+
+--- a/ifupdown2/addons/vxlan.py
++++ b/ifupdown2/addons/vxlan.py
+@@ -191,10 +191,6 @@
+ 
+     def syntax_check(self, ifaceobj, ifaceobj_getfunc):
+         if self._is_vxlan_device(ifaceobj):
+-            if not ifaceobj.get_attr_value_first('vxlan-local-tunnelip') and not self._vxlan_local_tunnelip:
+-                self.logger.warning('%s: missing vxlan-local-tunnelip' % ifaceobj.name)
+-                return False
+-
+             self.check_and_raise_svd_tvd_errors(ifaceobj)
+ 
+             return self.syntax_check_localip_anycastip_equal(
