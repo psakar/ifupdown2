@@ -1,0 +1,71 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          networking ifupdown
+# Required-Start:    mountkernfs $local_fs urandom
+# Required-Stop:     $local_fs
+# Should-Start:      udev
+# Default-Start:     S
+# Default-Stop:      0 6
+# Short-Description: Raise network interfaces.
+### END INIT INFO
+
+# LSB counterpart of networking.service (and ifupdown2-pre.service), only
+# installed by the pkg.ifupdown2.lsbservice build (see debian/rules), with the
+# dependency headers of ifupdown's init script, whose role it takes over. Runs
+# the same helper as the unit, after waiting for udev to settle.
+
+. /lib/lsb/init-functions
+
+HELPER=/usr/share/ifupdown2/sbin/start-networking
+STAMP=/run/network/networking.started
+
+test -x $HELPER || exit 0
+
+# like the unit's EnvironmentFile=
+if [ -r /etc/default/networking ]; then
+    set -a
+    . /etc/default/networking
+    set +a
+fi
+
+case "$1" in
+    start)
+        # ifupdown2-pre.service
+        if command -v udevadm >/dev/null 2>&1; then
+            udevadm settle --timeout=180 || true
+        fi
+        log_action_begin_msg "Configuring network interfaces"
+        $HELPER start
+        status=$?
+        [ $status -eq 0 ] && mkdir -p /run/network && touch $STAMP
+        log_action_end_msg $status
+        exit $status
+        ;;
+    stop)
+        log_action_begin_msg "Deconfiguring network interfaces"
+        $HELPER stop
+        status=$?
+        rm -f $STAMP
+        log_action_end_msg $status
+        exit $status
+        ;;
+    reload|force-reload)
+        log_action_begin_msg "Reloading network interfaces configuration"
+        $HELPER reload
+        status=$?
+        log_action_end_msg $status
+        exit $status
+        ;;
+    restart)
+        "$0" stop
+        "$0" start
+        ;;
+    status)
+        [ -e $STAMP ] && exit 0
+        exit 3
+        ;;
+    *)
+        echo "Usage: /etc/init.d/networking {start|stop|reload|restart|force-reload|status}" >&2
+        exit 3
+        ;;
+esac

@@ -11,15 +11,41 @@ override_dh_installman:
 	./ifupdown2/man/genmanpages.sh ./ifupdown2/man ./man
 	dh_installman
 
+
+
+# The pkg.ifupdown2.lsbservice build profile is for Devuan and other
+# systemd-free Debian derivatives (see the pkg.*.lsbservice profiles of
+# pve-common, pve-manager and others): it installs an LSB init script running
+# the same helper as networking.service instead of the systemd units, with the
+# same (no) start and stop behavior on installation and upgrades. To build this
+# variant, run:
+#   dpkg-buildpackage -b -us -uc -Ppkg.ifupdown2.lsbservice
+ifneq (,$(filter pkg.ifupdown2.lsbservice,$(DEB_BUILD_PROFILES)))
+override_dh_install:
+	dh_install
+
+override_dh_installsystemd:
+
+override_dh_installinit:
+	dh_installinit --name=networking --no-start --no-stop-on-upgrade
+
+override_dh_lintian:
+	dh_lintian
+	install -d debian/ifupdown2/usr/share/lintian/overrides
+	cat debian/ifupdown2.lintian-overrides.lsbservice \
+	    >>debian/ifupdown2/usr/share/lintian/overrides/ifupdown2
+else
 override_dh_install:
 	dh_install
 	mkdir -p debian/ifupdown2/usr/lib/systemd/system/
 	install --mode=644 debian/ifup@.service debian/ifupdown2/usr/lib/systemd/system/
 	install --mode=644 debian/ifupdown2-pre.service debian/ifupdown2/usr/lib/systemd/system/
 
-
 override_dh_installsystemd:
 	dh_installsystemd --name=networking --no-start --no-stop-on-upgrade
+
+override_dh_installinit:
+endif
 
 override_dh_compress:
 	dh_compress -X.py
