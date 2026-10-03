@@ -16,3 +16,4 @@ upstream/0001-use-raw-strings-for-regex-to-fix-backslash-interpret.patch
 upstream/0002-vxlan-add-support-for-IPv6-vxlan-local-tunnelip.patch
 pve/0014-nlmanager-read-ipv6-devconf-disable_ipv6-attribute-t.patch
 pve/0015-revert-addons-bond-warn-if-sub-interface-is-detected-on-bond-slave.patch
+pve/0016-start-networking-support-systems-not-booted-with-sys.patch

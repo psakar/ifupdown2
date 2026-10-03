@@ -1,0 +1,128 @@
+From 44094d6f7a56282dae51840fbe23cd18451214b7 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Petr=20Saka=C5=99?= <petr.sakar@chare.eu>
+Date: Sat, 3 Oct 2026 07:18:14 +0200
+Subject: [PATCH] start-networking: support systems not booted with systemd
+
+On systems not running systemd, like Devuan with sysvinit or OpenRC,
+where an init script runs start-networking instead of networking.service:
+
+- Stopping checked whether the system goes down via systemd's job queue
+  ('systemctl list-jobs'), to skip deconfiguring the interfaces then
+  (SKIP_DOWN_AT_SYSRESET). systemctl isn't there or doesn't work without
+  systemd, so the interfaces were always deconfigured on shutdown. If
+  not booted with systemd (as sd_booted(3) checks), use the runlevel
+  the system switches to instead, 0 (halt) or 6 (reboot), with sysvinit
+  as init, also with OpenRC as rc system, or OpenRC's RC_RUNLEVEL
+  (shutdown or reboot) with OpenRC as init.
+- --systemd made ifup/ifdown/ifreload log to the journal as well, which
+  doesn't exist there; only pass it when booted with systemd.
+
+With systemd, nothing changes, apart from using 'grep -E' instead of the
+obsolescent egrep.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ ifupdown2/sbin/start-networking | 48 ++++++++++++++++++++++++++-------
+ 1 file changed, 39 insertions(+), 9 deletions(-)
+
+diff --git a/ifupdown2/sbin/start-networking b/ifupdown2/sbin/start-networking
+index 8f790a0..2726542 100755
+--- a/ifupdown2/sbin/start-networking
++++ b/ifupdown2/sbin/start-networking
+@@ -24,6 +24,39 @@ EXTRA_ARGS=
+ [ "$DEBUG" = yes ] && EXTRA_ARGS="$EXTRA_ARGS -d"
+ [ "$SYSLOG" = yes ] && EXTRA_ARGS="$EXTRA_ARGS --syslog"
+ 
++# Booted with systemd, as sd_booted(3) checks? Otherwise, e.g. with sysvinit
++# or OpenRC, this is run by an init script.
++if [ -d /run/systemd/system ]; then
++	SYSTEMD=yes
++	# journal logging
++	LOG_ARGS=--systemd
++else
++	SYSTEMD=no
++	LOG_ARGS=
++fi
++
++# Whether the system is going down, i.e. halted, powered off or rebooted.
++system_going_down() {
++	if [ "$SYSTEMD" = yes ]; then
++		systemctl list-jobs | grep -E -q '(shutdown|reboot|halt|poweroff)\.target'
++		return
++	fi
++
++	# The runlevel the system switches to: 0 (halt) or 6 (reboot) while the
++	# init scripts get stopped for it, with sysvinit as init (also with OpenRC
++	# as rc system, as on Devuan).
++	case "$(runlevel 2>/dev/null)" in
++	*' '[06]) return 0 ;;
++	esac
++
++	# OpenRC as init, which tells its scripts the runlevel instead
++	case "$RC_RUNLEVEL" in
++	shutdown|reboot) return 0 ;;
++	esac
++
++	return 1
++}
++
+ perf_options() {
+     # At bootup lets set perfmode
+     [ -f ${IFSTATE_LOCKFILE} ] && echo -n "" && return
+@@ -92,7 +125,7 @@ ifup_hotplug () {
+ 			    done)
+ 	    if [ -n "$ifaces" ]
+ 	    then
+-		ifup $ifaces "$@" --systemd || true
++		ifup $ifaces "$@" $LOG_ARGS || true
+ 	    fi
+     fi
+ }
+@@ -101,7 +134,7 @@ ifup_mgmt () {
+ 	ifaces=$(ifquery --list --allow=mgmt 2>/dev/null)
+ 	if [ -n "$ifaces" ]; then
+ 		echo "bringing up mgmt class interfaces"
+-		ifup --allow=mgmt --systemd
++		ifup --allow=mgmt $LOG_ARGS
+ 	fi
+ }
+ 
+@@ -127,15 +160,12 @@ start)
+ 	perfoptions=$(perf_options)
+ 	echo ${NAME}':' "Configuring network interfaces"
+ 	ifup_mgmt
+-	ifup -a $EXTRA_ARGS $exclusions $perfoptions --systemd
++	ifup -a $EXTRA_ARGS $exclusions $perfoptions $LOG_ARGS
+ 	ifup_hotplug $HOTPLUG_ARGS $EXTRA_ARGS $exclusions
+ 	;;
+ stop)
+ 	if [ "$SKIP_DOWN_AT_SYSRESET" = "yes" ]; then
+-        SYSRESET=0
+-        systemctl list-jobs | egrep -q '(shutdown|reboot|halt|poweroff)\.target'
+-        [ $? -eq 0 ] && SYSRESET=1
+-        if [ $SYSRESET -eq 1 ]; then
++        if system_going_down; then
+             echo ${NAME}':' "Removing dhclient service files (if any)"
+             find /var/lib/dhcp/ -name "dhclient*leases" -delete
+             echo ${NAME}':' "Skipping deconfiguring the rest of the network interfaces"
+@@ -148,7 +178,7 @@ stop)
+ 	exclusions=$(process_exclusions)
+ 
+ 	echo ${NAME}':' "Deconfiguring network interfaces"
+-	ifdown -a $EXTRA_ARGS $exclusions --systemd
++	ifdown -a $EXTRA_ARGS $exclusions $LOG_ARGS
+ 	;;
+ 
+ reload)
+@@ -157,7 +187,7 @@ reload)
+ 	exclusions=$(process_exclusions)
+ 
+ 	echo ${NAME}':' "Reloading network interfaces configuration"
+-	ifreload -a $EXTRA_ARGS $exclusions --systemd
++	ifreload -a $EXTRA_ARGS $exclusions $LOG_ARGS
+ 	;;
+ 
+ *)
+-- 
+2.47.3
+
