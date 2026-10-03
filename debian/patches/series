@@ -22,3 +22,4 @@ upstream/0005-bond-tolerate-unavailable-slaves-during-setup.patch
 pve/0016-addons-bond-skip-mac-check-for-bonds-without-slaves.patch
 pve/0017-addons-vxlan-don-t-fail-syntax-check-on-missing-vxla.patch
 pve/0018-addons-vxlan-add-vxlan-gbp-attribute.patch
+pve/0019-start-networking-support-systems-not-booted-with-sys.patch
