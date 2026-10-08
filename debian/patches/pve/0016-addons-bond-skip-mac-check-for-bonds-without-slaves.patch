@@ -1,0 +1,34 @@
+From 1f25912c9f990dbce7d5ff397adbe4aab6ad00a1 Mon Sep 17 00:00:00 2001
+From: Thomas Lamprecht <t.lamprecht@proxmox.com>
+Date: Mon, 2 Nov 2026 19:51:00 +0100
+Subject: [PATCH] addons: bond: skip mac check for bonds without slaves
+
+Moving the bond mac check into set_bond_mac() in commit 2980792
+("addons: bond: change bond mac inheritance code (any slave mac is
+fine)") dropped the empty slave list check that guarded the old inline
+code.
+
+_add_slaves() returns None for a bond without configured slaves, for
+example one only defined through bond-mode or with a bond-slaves regex
+that matches no existing interface. Building the list of slave macs
+then raised a TypeError on every reload of such an existing bond,
+marking it as failed and making ifreload exit with an error.
+
+Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
+---
+ ifupdown2/addons/bond.py | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/ifupdown2/addons/bond.py b/ifupdown2/addons/bond.py
+index cd37d63..dfcab95 100644
+--- a/ifupdown2/addons/bond.py
++++ b/ifupdown2/addons/bond.py
+@@ -892,7 +892,7 @@ class bond(Addon, moduleBase):
+             self.log_error(str(e), ifaceobj)
+ 
+     def set_bond_mac(self, link_exists, ifaceobj, bond_slaves):
+-        if not self.bond_mac_mgmt or not link_exists or ifaceobj.get_attr_value_first("hwaddress"):
++        if not self.bond_mac_mgmt or not link_exists or not bond_slaves or ifaceobj.get_attr_value_first("hwaddress"):
+             return
+ 
+         # check if the bond mac address is correctly inherited from it's

@@ -1,0 +1,40 @@
+From 97fb31ce1af89079834d441b59a3d7be865158c4 Mon Sep 17 00:00:00 2001
+From: Julien Fortin <jfortin@nvidia.com>
+Date: Fri, 5 Jan 2024 15:57:26 +0100
+Subject: [PATCH] addons: bond: fix 'list index out of range' error when
+ removing first bond slave
+
+Upstream-Link: https://github.com/CumulusNetworks/ifupdown2/pull/318
+Signed-off-by: Julien Fortin <jfortin@nvidia.com>
+---
+ ifupdown2/addons/bond.py | 14 +++++++++-----
+ 1 file changed, 9 insertions(+), 5 deletions(-)
+
+diff --git a/ifupdown2/addons/bond.py b/ifupdown2/addons/bond.py
+index b691ef44..2e6edf2d 100644
+--- a/ifupdown2/addons/bond.py
++++ b/ifupdown2/addons/bond.py
+@@ -936,14 +936,18 @@ def set_bond_mac(self, link_exists, ifaceobj, bond_slaves):
+         bond_mac = self.cache.get_link_address(ifaceobj.name)
+ 
+         # Get the list of slave macs
+-        bond_slave_macs = map(
+-            lambda slave_ifname: self.cache.get_link_info_slave_data_attribute(slave_ifname, Link.IFLA_BOND_SLAVE_PERM_HWADDR),
++        bond_slave_macs = list(map(
++            lambda slave_ifname: self.cache.get_link_info_slave_data_attribute(
++                slave_ifname,
++                Link.IFLA_BOND_SLAVE_PERM_HWADDR,
++                default=list()
++            ),
+             bond_slaves
+-        )
++        ))
+ 
+-        if bond_slaves and bond_mac not in bond_slave_macs:
++        if bond_slaves and bond_slave_macs and bond_mac not in bond_slave_macs:
+             first_slave_ifname = bond_slaves[0]
+-            first_slave_mac = list(bond_slave_macs)[0]
++            first_slave_mac = bond_slave_macs[0]
+ 
+             if first_slave_mac and bond_mac != first_slave_mac:
+                 self.logger.info(
