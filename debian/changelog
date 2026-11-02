@@ -1,3 +1,31 @@
+ifupdown2 (3.3.0-1+pmx13) trixie; urgency=medium
+
+  * fix #8130: bond: keep the MAC address of a bond if it was inherited
+    from any of its members, instead of resetting it to that of the
+    first member as listed by the kernel. If the kernel listed the
+    members in a different order than configured, for example with
+    custom interface names, the first reload after boot changed the MAC
+    address, briefly interrupting traffic on the bond and its bridges.
+
+  * fix #8117: bond: continue adding the remaining members if one is
+    missing or fails to join. Previously, a member missing at boot
+    aborted the setup, so members listed after it were never added and
+    the bond could end up with no members at all.
+
+  * vxlan: do not fail the syntax check ('ifup -s', 'ifreload -s') for
+    VXLAN interfaces without vxlan-local-tunnelip. The setting is
+    optional, as the kernel can pick the source address from the route
+    to the remote endpoint.
+
+  * vxlan: add the vxlan-gbp option to enable the Group Based Policy
+    extension (VXLAN-GBP). It carries the packet mark over to the
+    receiving VXLAN peer, where, for example, firewall rules can match
+    on it. The kernel only accepts the option on creation, so ifreload
+    re-creates the interface when it changes, and warns if a running
+    interface differs from the configuration.
+
+ -- Proxmox Support Team <support@proxmox.com>  Mon, 02 Nov 2026 10:02:10 +0100
+
 ifupdown2 (3.3.0-1+pmx12) trixie; urgency=medium
 
   * packaging: avoid installing executables and systemd service files inside
