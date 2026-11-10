@@ -1,3 +1,15 @@
+ifupdown2 (3.3.0-1+pmx13+devuan1) trixie; urgency=medium
+
+  * add pkg.ifupdown2.lsbservice build profile with an LSB 'networking' init
+    script, for systems without systemd like Devuan
+
+  * start-networking: on systems not booted with systemd, detect a shutdown or
+    reboot via the runlevel instead of systemctl, so that the interfaces stay
+    configured then if SKIP_DOWN_AT_SYSRESET is set, and don't request journal
+    logging
+
+ -- Petr Sakař <petr.sakar@chare.eu>  Tue, 10 Nov 2026 20:34:49 +0100
+
 ifupdown2 (3.3.0-1+pmx13) trixie; urgency=medium
 
   * fix #8130: bond: keep the MAC address of a bond if it was inherited
